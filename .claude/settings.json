@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bunx tsc --noEmit)",
+      "Bash(bunx tsc --noEmit *)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(npx tsc --noEmit *)",
+      "Bash(bun run typecheck)",
+      "Bash(bun run typecheck *)",
+      "Bash(bun run test)",
+      "Bash(bun run test *)",
+      "Bash(npx vitest run)",
+      "Bash(npx vitest run *)",
+      "Bash(uv run pytest)",
+      "Bash(uv run pytest *)",
+      "Bash(agent-device snapshot)",
+      "Bash(agent-device snapshot *)",
+      "Bash(agent-device screenshot *)",
+      "Bash(agent-device devices)",
+      "Bash(agent-device devices *)",
+      "Bash(xcrun simctl list)",
+      "Bash(xcrun simctl list *)",
+      "Bash(xcrun simctl get_app_container *)",
+      "Bash(simctl get_app_container *)",
+      "Bash(npm view *)",
+      "mcp__ide__getDiagnostics",
+      "mcp__Blender__get_screenshot_of_area_as_image"
+    ]
+  }
+}
