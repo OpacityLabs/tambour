@@ -60,6 +60,53 @@ describe('update: multi-atom transitions', () => {
   })
 })
 
+describe('update: base cache', () => {
+  it('consecutive updates see each other (cache-hit path)', () => {
+    const a$ = observable({ list: [1] }) as any
+    const push = update('t/push', { a: a$ }, (d, v: number) => { d.a.list.push(v) })
+    push(2)
+    push(3)
+    expect(a$.peek()).toEqual({ list: [1, 2, 3] })
+  })
+
+  it('a foreign direct set between updates invalidates the cache', () => {
+    const a$ = observable({ v: 1, other: 'x' }) as any
+    const bump = update('t/bump', { a: a$ }, d => { d.a.v += 1 })
+    bump()                       // cache now holds { v: 2, other: 'x' }
+    a$.v.set(100)                // foreign write — must not be masked by the cache
+    bump()
+    expect(a$.v.peek()).toBe(101)
+  })
+
+  it('a foreign whole-atom set between updates invalidates the cache', () => {
+    const a$ = observable({ v: 1 }) as any
+    const bump = update('t/bump2', { a: a$ }, d => { d.a.v += 1 })
+    bump()
+    a$.set({ v: 50 })
+    bump()
+    expect(a$.v.peek()).toBe(51)
+  })
+
+  it('two different updates on the same atom share the cache correctly', () => {
+    const a$ = observable({ v: 0, w: 0 }) as any
+    const bumpV = update('t/bumpV', { a: a$ }, d => { d.a.v += 1 })
+    const bumpW = update('t/bumpW', { a: a$ }, d => { d.a.w += 1 })
+    bumpV(); bumpW(); bumpV(); bumpW()
+    expect(a$.peek()).toEqual({ v: 2, w: 2 })
+  })
+
+  it('read-scope atoms also read through the cache without corruption', () => {
+    const cart$ = observable({ total: 10 }) as any
+    const settings$ = observable({ rate: 0.5 }) as any
+    const applyRate = update('t/rate', { writes: { cart: cart$ }, reads: { settings: settings$ } },
+      d => { d.cart.total = d.cart.total * (1 + d.settings.rate) })
+    applyRate()
+    settings$.rate.set(1.0)      // foreign write to a read atom
+    applyRate()
+    expect(cart$.total.peek()).toBe(30)   // 10*1.5=15, then 15*2=30 — saw the new rate
+  })
+})
+
 describe('update: surgical notification (the fine-grained promise)', () => {
   it('an untouched leaf does NOT notify when a sibling changes', () => {
     const cart$ = observable({

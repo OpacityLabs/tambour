@@ -1,13 +1,21 @@
 import { observable, batch } from '@legendapp/state'
-import type { Atom } from './types'
+import { persistAtom, type PersistConfig, type PersistHandle } from './persist'
+import type { Atom, ReadonlyNode } from './types'
+
+export interface AtomOptions {
+  persist?: PersistConfig
+}
 
 interface RegistryEntry {
   name: string
   node$: any
   initial: unknown
+  persist?: PersistHandle
 }
 
 const registry = new Map<string, RegistryEntry>()
+const byNode = new WeakMap<object, RegistryEntry>()
+const ALWAYS_HYDRATED$ = observable(true)
 
 /**
  * Register a named root state node. The name is a real registration: devtools
@@ -15,7 +23,7 @@ const registry = new Map<string, RegistryEntry>()
  * snapshot / restore. Every node underneath is independently observable — the
  * atom is the unit of registration, not of reactivity.
  */
-export function atom<T>(name: string, initial: T): Atom<T> {
+export function atom<T>(name: string, initial: T, options?: AtomOptions): Atom<T> {
   if (registry.has(name)) {
     throw new Error(
       `[concordia] duplicate atom name '${name}'. Atom names must be unique; ` +
@@ -23,8 +31,32 @@ export function atom<T>(name: string, initial: T): Atom<T> {
     )
   }
   const node$ = observable(structuredClone(initial))
-  registry.set(name, { name, node$, initial: structuredClone(initial) })
+  const entry: RegistryEntry = { name, node$, initial: structuredClone(initial) }
+  if (options?.persist) {
+    entry.persist = persistAtom(node$, name, options.persist)
+  }
+  registry.set(name, entry)
+  byNode.set(node$, entry)
   return node$ as unknown as Atom<T>
+}
+
+/** Hydration status node for an atom — always `true` for unpersisted atoms
+ *  and for sync storage (MMKV). A function accessor rather than the spec's
+ *  original `cart$.hydrated$` because attaching properties to a Legend proxy
+ *  would create a state child named `hydrated$`. */
+export function hydrationOf(atom$: Atom<any>): ReadonlyNode<boolean> {
+  const entry = byNode.get(atom$ as unknown as object)
+  return (entry?.persist?.hydrated$ ?? ALWAYS_HYDRATED$) as ReadonlyNode<boolean>
+}
+
+/** Resolves when every persisted atom registered SO FAR has hydrated.
+ *  `await hydrated()` is the PersistGate replacement — call it after all
+ *  module-level atoms have been imported. */
+export function hydrated(): Promise<void> {
+  const pending = [...registry.values()]
+    .filter(e => e.persist)
+    .map(e => e.persist!.whenHydrated)
+  return Promise.all(pending).then(() => undefined)
 }
 
 /** Internal/devtools: the writable node for a registered atom. */

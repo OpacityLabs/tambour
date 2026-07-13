@@ -14,6 +14,11 @@ export function nodeAt(root$: any, path: readonly PathKey[]): any {
   return node
 }
 
+/** Resolves the CURRENT (pre-patch) plain value at a path — lets callers with
+ *  a shadow state avoid Legend reads entirely (reading a keyed array after a
+ *  structural write is O(n)). Must reflect all previously applied patches. */
+export type PathResolver = (path: readonly PathKey[]) => unknown
+
 /**
  * Apply Immer patches to a Legend observable via targeted per-node operations.
  * Handles the array cases Immer emits (and canonical JSON-patch forms):
@@ -24,8 +29,10 @@ export function nodeAt(root$: any, path: readonly PathKey[]): any {
  *   - add/replace on an object key     -> set
  *   - remove on an object key          -> delete
  *   - empty path                       -> whole-node set
+ * Without `resolve`, current values are read via peek() (fine for one-off
+ * callers like the undo recipe; update() always passes a resolver).
  */
-export function applyPatches(root$: any, patches: readonly Patch[]): void {
+export function applyPatches(root$: any, patches: readonly Patch[], resolve?: PathResolver): void {
   for (const patch of patches) {
     const { op, path } = patch
 
@@ -39,29 +46,27 @@ export function applyPatches(root$: any, patches: readonly Patch[]): void {
     const parentPath = path.slice(0, -1)
     const key = path[path.length - 1] as PathKey
     const parent$ = nodeAt(root$, parentPath)
-    const parentIsArray = Array.isArray(parent$.peek())
+    const parentValue = resolve ? resolve(parentPath) : parent$.peek()
 
-    if (parentIsArray) {
+    if (Array.isArray(parentValue)) {
       if (key === 'length') {
         // Immer emits `replace` on length for truncation
-        const next = (parent$.peek() as unknown[]).slice(0, patch.value as number)
-        parent$.set(next)
+        parent$.set(parentValue.slice(0, patch.value as number))
         continue
       }
       const index = key as number
       if (op === 'add') {
-        const len = (parent$.peek() as unknown[]).length
-        if (index >= len) {
+        if (index >= parentValue.length) {
           // append — Legend's native push avoids re-diffing the whole array
           parent$.push(patch.value)
         } else {
           // JSON-patch add on an array index means INSERT, not overwrite
-          const next = (parent$.peek() as unknown[]).slice()
+          const next = parentValue.slice()
           next.splice(index, 0, patch.value)
           parent$.set(next)
         }
       } else if (op === 'remove') {
-        const next = (parent$.peek() as unknown[]).slice()
+        const next = parentValue.slice()
         next.splice(index, 1)
         parent$.set(next)
       } else {

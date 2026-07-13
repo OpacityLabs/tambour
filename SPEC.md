@@ -82,9 +82,12 @@ export const cart$ = atom('cart', initial, {
 ### Hydration
 
 Async storage means an atom starts at its initial value and may be overwritten a
-tick later. Each persisted atom exposes `cart$.hydrated$` (an observable — `use$` it
-or gate the app on `await store.hydrated()`). On RN, prefer MMKV: hydration is
-synchronous and this concern disappears.
+tick later. Hydration status is exposed via `hydrationOf(cart$)` (an observable —
+`use$` it) and `await hydrated()` gates the app (the PersistGate replacement).
+(Originally spec'd as `cart$.hydrated$`; changed to an accessor because
+attaching properties to a Legend proxy would create a state child.) On RN,
+prefer MMKV: hydration is synchronous and this concern disappears — verified:
+with sync storage the atom is hydrated before `atom()` returns.
 
 ### Test reset
 
@@ -492,12 +495,14 @@ slice with persistence + async pressure-tests the APIs before they freeze.
 
 - **Legend State bus factor / v3 beta churn** — mitigated by pinning, wrapping, and
   keeping the touched surface small; a fork or swap stays contained.
-- **Hot-path update cost** — Phase 0 data (see SPIKE-FINDINGS.md): Immer overhead
-  on leaf writes is 1.1–1.4x (a non-issue; scoped updates reach parity). The real
-  cost is Legend's keyed object arrays: O(n) read-after-structural-write (~277 µs
-  @ 1k items), which `update()` pays via its base `peek()`. Mitigations: scoped
-  updates for per-frame paths; a Phase 1 base-cache (reuse Immer's `next` as the
-  next base) if RN-device numbers justify it.
+- **Hot-path update cost** — largely retired in Phase 4. Phase 0/smoke-test data
+  (see SPIKE-FINDINGS.md) showed Legend's keyed-array O(n) read-after-structural-
+  write (3.4 ms/push @ 1k items on Hermes) dominating `update()`. Two shipped
+  fixes: the **base cache** (reuse Immer's `next` as the next base, invalidated
+  by a version counter any foreign write bumps) and the **shadow resolver**
+  (patch application reads a plain-data shadow, never Legend). Node result:
+  1k-item push went 510 µs → 30 µs. Scoped updates remain the belt-and-braces
+  for per-frame paths.
 - **Rx maximalism** — mitigated by rule 6, the lint rule, and `streamSelector` being
   the only sanctioned Rx→React path.
 - **Convention decay** — the write-discipline and naming rules hold only if the type

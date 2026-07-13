@@ -1,6 +1,18 @@
 // concordia — public API
 
-export { atom, atomNames, clearRegistry, resetAll, restore, snapshot } from './atom'
+export {
+  atom,
+  atomNames,
+  clearRegistry,
+  hydrated,
+  hydrationOf,
+  resetAll,
+  restore,
+  snapshot,
+  type AtomOptions,
+} from './atom'
+export type { PersistConfig } from './persist'
+export { asyncStorage, memoryStorage, mmkvStorage, type ConcordiaStorage } from './storage'
 export { selector, type SelectorOptions } from './selector'
 export { selectorFamily, type FamilyOptions } from './selectorFamily'
 export { streamSelector, type StreamSelectorOptions } from './streamSelector'
