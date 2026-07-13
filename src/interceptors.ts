@@ -16,6 +16,8 @@ export interface Interceptor {
   before?: (name: string, args: unknown[], scope: string[]) => void
   /** Runs after patches apply, with the full record (devtools/log/undo feed). */
   after?: (record: UpdateRecord) => void
+  /** Every event/streamEvent fire — the devtools timeline feed. */
+  onEventFire?: (eventName: string, args: unknown[]) => void
   /** Handler errors from events — fires whether or not the caller awaited. */
   onEventError?: (eventName: string, error: unknown, args: unknown[]) => void
   /** A reaction loop was circuit-broken (reported once per burst). */
@@ -38,6 +40,10 @@ export function runBefore(name: string, args: unknown[], scope: string[]): void 
 
 export function runAfter(record: UpdateRecord): void {
   for (const i of interceptors) i.after?.(record)
+}
+
+export function runEventFire(eventName: string, args: unknown[]): void {
+  for (const i of interceptors) i.onEventFire?.(eventName, args)
 }
 
 export function runEventError(eventName: string, error: unknown, args: unknown[]): void {

@@ -1,6 +1,6 @@
 import { Observable } from 'rxjs'
 import { currentOrigin, runWithOrigin } from './context'
-import { runEventError } from './interceptors'
+import { runEventError, runEventFire } from './interceptors'
 
 export interface EventOptions {
   /**
@@ -38,6 +38,7 @@ function makeInternals<F extends (...args: never[]) => unknown>(fn: F, name: str
 }
 
 function notify(ev: EventInternals, args: unknown[]): void {
+  runEventFire(ev[EVENT_NAME], args)
   const payload = args.length <= 1 ? args[0] : args
   for (const l of ev[LISTENERS]) l(payload)
 }

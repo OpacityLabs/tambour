@@ -16,4 +16,6 @@ export {
 export { reaction, type ReactionOptions } from './reaction'
 export { atomToStream } from './bridges'
 export { addInterceptor, type Interceptor, type UpdateRecord } from './interceptors'
+export { connectDevtools, type DevtoolsConnector, type DevtoolsOptions } from './devtools'
+export { recordHistory, type History } from './history'
 export type { Atom, ReadonlyNode, ReadonlyNodeBase } from './types'
