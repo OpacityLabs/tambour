@@ -395,11 +395,15 @@ reaction('cart/freeShipping', overLimit$, over => {
 - **Initial run is opt-in.** Default fires on change only; `{ immediate: true }`
   evaluates against current state at registration — the hydration case (state
   already satisfies the condition at startup), made explicit.
-- **Loop protection is machinery, not advice.** Dev mode tags update invocations
-  originating from reactions and counts re-entries within a cascade; past a small
-  depth it throws with the actual chain
-  (`reaction 'shipping' → update 'cart/setShipping' → reaction 'shipping' → …`).
-  Production gets a circuit-breaker that logs and bails.
+- **Loop protection is machinery, not advice — and it circuit-breaks, never
+  throws.** A reaction→update→reaction loop is synchronous (it can't yield to
+  the microtask queue), so the runtime counts reaction runs per synchronous
+  task; past a threshold it *skips* further runs so the cascade dies out, and
+  reports once per burst via console.error + the `onReactionLoop` interceptor
+  with the recent chain (`r/chaseA → r/chaseB → …`). It deliberately does not
+  throw: Phase 1 verified empirically that an exception thrown through
+  Legend's notification dispatch corrupts its internal state (observers
+  registered afterwards go dead).
 
 ---
 

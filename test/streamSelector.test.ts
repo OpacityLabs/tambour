@@ -35,6 +35,34 @@ describe('streamSelector: lazy activation', () => {
     expect(node$.peek()).toEqual([1, 2])
   })
 
+  it('re-activates cleanly: observe -> dispose -> observe again', async () => {
+    const source = new Subject<number>()
+    let activations = 0
+    const wrapped = new Observable<number>(sub => {
+      activations++
+      const s = source.subscribe(sub)
+      return () => s.unsubscribe()
+    })
+    const node$ = streamSelector<number>(wrapped)
+
+    const d1 = node$.onChange(() => {})
+    node$.get()
+    expect(activations).toBe(1)
+    source.next(1)
+    expect(node$.peek()).toBe(1)
+
+    d1()                                          // last observer leaves
+    await new Promise(r => setTimeout(r, 10))     // legend deactivation is async
+
+    const d2 = node$.onChange(() => {})           // observe again
+    node$.get()
+    await new Promise(r => setTimeout(r, 10))     // re-subscription is ALSO async —
+    source.next(2)                                // emissions during the gap are missed
+    expect(node$.peek()).toBe(2)                  // values flow after re-activation
+    expect(activations).toBe(2)                   // pipeline genuinely re-subscribed
+    d2()
+  })
+
   it('holds last value if the pipeline errors', () => {
     const source = new Subject<number>()
     const node$ = streamSelector(source.asObservable())

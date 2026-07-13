@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { observable } from '@legendapp/state'
-import { addAfterInterceptor, update } from '../src/update'
+import { addInterceptor } from '../src/interceptors'
+import { update } from '../src/update'
 
 describe('update: multi-atom transitions', () => {
   it('routes patches to the right atoms, atomically', () => {
@@ -46,7 +47,7 @@ describe('update: multi-atom transitions', () => {
   it('interceptors receive name, args, scope, patches, inverse', () => {
     const a$ = observable({ v: 1 }) as any
     const seen: any[] = []
-    const off = addAfterInterceptor(r => seen.push(r))
+    const off = addInterceptor({ after: r => seen.push(r) })
     const setV = update('test/setV', { a: a$ }, (d, v: number) => { d.a.v = v })
     setV(42)
     off()
