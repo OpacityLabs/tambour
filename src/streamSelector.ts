@@ -1,20 +1,34 @@
-import { observable, type Observable as LegendObservable } from '@legendapp/state'
+import { observable } from '@legendapp/state'
 import { synced } from '@legendapp/state/sync'
 import type { Observable as RxObservable, Subscription } from 'rxjs'
+import type { ReadonlyNode } from './types'
 
 export interface StreamSelectorOptions<T> {
   default?: T
 }
 
 /**
- * An Rx pipeline landing in a Legend node — the "async selector".
- * Spike goals: verify lazy activation (the pipeline is NOT subscribed until the
- * node is first observed), value flow, and teardown behavior.
+ * An Rx pipeline landing in a Legend node — the "async selector". Lazily
+ * activates on first observer, refCounts, and tears down after the last
+ * leaves (re-activation is async: emissions during the gap are missed).
+ * Errors log and the node holds its last value.
+ *
+ * `default` changes the TYPE: without it the node is honestly `T | undefined`
+ * ("not loaded yet" is a state consumers must handle); with it, undefined is
+ * unrepresentable.
  */
 export function streamSelector<T>(
   source: RxObservable<T>,
+  opts: { default: T },
+): ReadonlyNode<T>
+export function streamSelector<T>(
+  source: RxObservable<T>,
   opts?: StreamSelectorOptions<T>,
-): LegendObservable<T | undefined> {
+): ReadonlyNode<T | undefined>
+export function streamSelector<T>(
+  source: RxObservable<T>,
+  opts?: StreamSelectorOptions<T>,
+): ReadonlyNode<T | undefined> {
   const node$ = observable<T | undefined>(
     synced({
       initial: opts?.default,
@@ -28,5 +42,5 @@ export function streamSelector<T>(
       },
     }) as any,
   )
-  return node$ as LegendObservable<T | undefined>
+  return node$ as unknown as ReadonlyNode<T | undefined>
 }
