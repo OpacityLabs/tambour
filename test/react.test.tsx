@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { StrictMode } from 'react'
+import { StrictMode, startTransition, useState } from 'react'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Subject } from 'rxjs'
@@ -120,6 +120,38 @@ describe('use$: streamSelector integration', () => {
     await new Promise(r => setTimeout(r, 20))
     act(() => source.next(42))
     await waitFor(() => expect(screen.getByTestId('v').textContent).toBe('42'))
+  })
+})
+
+describe('use$: React 19 concurrency', () => {
+  it('store updates interleaved with startTransition render consistently (no tearing)', () => {
+    const { cart$, setQty } = makeStore()
+    const seen: Array<{ qty: number; label: string }> = []
+
+    function Probe() {
+      const qty = use$(cart$.items[0]!.qty)
+      const [label, setLabel] = useState('initial')
+      seen.push({ qty, label })
+      return (
+        <button
+          data-testid="go"
+          onClick={() => {
+            setQty(0, 100)                                  // external store write...
+            startTransition(() => setLabel('transitioned')) // ...interleaved with a transition
+          }}
+        >
+          {qty}-{label}
+        </button>
+      )
+    }
+    render(<Probe />)
+    act(() => screen.getByTestId('go').click())
+
+    expect(screen.getByTestId('go').textContent).toBe('100-transitioned')
+    // every render observed a consistent pair — the store value never lagged
+    // behind in a transition frame after the write landed
+    const afterWrite = seen.filter(s => s.label === 'transitioned')
+    expect(afterWrite.every(s => s.qty === 100)).toBe(true)
   })
 })
 

@@ -91,7 +91,39 @@ object arrays want unique, stable `id`s to benefit from keyed optimization.
 
 ## Open for Phase 1
 
-- RN-device benchmark run (Hermes numbers will differ from V8).
-- `streamSelector` re-activation + StrictMode probes.
-- Event causal-attribution strategy (context propagation without zones).
-- The base-cache optimization, if RN numbers justify it.
+- ~~RN-device benchmark run~~ → done, see §6.
+- ~~`streamSelector` re-activation + StrictMode probes~~ → done in Phases 1–2.
+- Event causal-attribution strategy (context propagation without zones) →
+  shipped sync-only in Phase 1.
+- The base-cache optimization — **upgraded to "likely justified" by the
+  Hermes numbers below** for apps doing structural writes on large keyed arrays.
+
+## 6. React 19 + Hermes/RN 0.83 validation (2026-07-13)
+
+**React 19.2.0 (jsdom):** full suite green, including a no-tearing probe of
+store writes interleaved with `startTransition`. No peer or runtime warnings.
+
+**On-device (shine `concordia-probe` branch, iPhone 17 Pro sim, Hermes, RN
+0.83 New Arch, dev-mode JS):** vendored library ran alongside shine's live
+Redux store. Verified interactively: targeted re-renders (6 updates to a
+sibling row left the other at renders: 1), equals-selector, selectorFamily,
+streamSelector interval pipeline, edge-triggered reaction firing an event
+exactly once, resetAll.
+
+| Scenario | Hermes | Node/V8 (Phase 0) |
+|---|---|---|
+| `update()` leaf write | 15.7 µs | 0.88 µs |
+| direct `batch(set)` leaf write | 7.0 µs | 0.63 µs |
+| `update()` on 1k-item atom | 36.9 µs | 1.5 µs |
+| scoped `update()` (item node) | 15.3 µs | 0.88 µs |
+| `update()` push on 1k keyed array | **3417 µs** | 487 µs |
+
+Read: leaf-write overhead is ~2.3x direct (vs 1.4x on V8) and absolute costs
+(~16 µs) are irrelevant for user-action frequency. The keyed-array
+read-after-structural-write cost is ~7x worse on Hermes — **3.4 ms per push
+on a 1k list** is dropped-frame territory if it ever happens during
+animation. Scales roughly linearly (~0.34 ms at 100 items — fine). Guidance:
+keep large keyed-array atoms out of per-frame paths, prefer scoped updates,
+and prioritize the base-cache optimization in `update()` if a dogfooded app
+(shine's history slice is the candidate) shows this in traces. Dev-mode JS —
+release-mode numbers will be somewhat better.
