@@ -1,28 +1,46 @@
 {
   "name": "concordia",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Phase 0 spike — state management on Legend State + Immer patches + RxJS",
+  "description": "State management on Legend State: named multi-atom updates (Immer patches), sync + stream selectors (RxJS), events, reactions, per-atom persistence",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./react": "./src/react.ts"
+  },
+  "files": [
+    "src"
+  ],
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
     "bench": "tsx bench/update-bench.ts",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
+  "peerDependencies": {
     "@legendapp/state": "3.0.0-beta.47",
-    "immer": "11.1.11",
-    "rxjs": "7.8.2"
+    "immer": ">=11",
+    "react": ">=18",
+    "rxjs": ">=7"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@legendapp/state": "3.0.0-beta.47",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "fast-check": "^4.1.1",
+    "immer": "11.1.11",
     "jsdom": "^27.0.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "rxjs": "7.8.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^3.0.0"
