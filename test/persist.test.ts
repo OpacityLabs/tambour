@@ -23,6 +23,18 @@ describe('persistence: sync storage (MMKV-style)', () => {
     expect(hydrationOf(cart$).peek()).toBe(true)
   })
 
+  it('missing stored value: materializes the initial value to storage immediately', () => {
+    // Migration durability: an atom seeded from a legacy source must not wait
+    // for its first write to own its storage key — the legacy source may be
+    // destroyed in the meantime.
+    const storage = memoryStorage()
+    atom('cart', { total: 7, fromLegacy: true }, { persist: { storage } })
+    expect(JSON.parse(storage.data.get('cart')!)).toEqual({
+      v: 1,
+      data: { total: 7, fromLegacy: true },
+    })
+  })
+
   it('writes through on every update, one write per batch', () => {
     const storage = memoryStorage()
     const cart$ = atom('cart', { items: [] as string[], total: 0 }, { persist: { storage } })

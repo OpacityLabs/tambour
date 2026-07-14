@@ -55,6 +55,16 @@ export function persistAtom(node$: any, atomName: string, config: PersistConfig)
       } catch (error) {
         console.error(`[concordia] failed to hydrate atom '${atomName}':`, error)
       }
+    } else {
+      // No stored value: materialize the initial value NOW. This makes
+      // legacy-data migrations durable on first run — waiting for the first
+      // write leaves a window where the legacy source can be destroyed
+      // (learned the hard way: redux-persist rewrites its root envelope and
+      // drops unknown keys the moment its reducer set shrinks).
+      void config.storage.setString(
+        key,
+        JSON.stringify({ v: targetVersion, data: node$.peek() }),
+      )
     }
     hydrated$.set(true)
   }
