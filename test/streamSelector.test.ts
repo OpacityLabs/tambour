@@ -63,6 +63,25 @@ describe('streamSelector: lazy activation', () => {
     d2()
   })
 
+  it('replaces keyed arrays wholesale — a shrinking emission must not merge', () => {
+    // Legend's default synced-update mode MERGES arrays of objects with `id`
+    // fields: [a,b,c,d] → emission [d] would land as [d,b,c,d]. streamSelector
+    // passes mode 'set' so emissions replace. (Found via the showcase app's
+    // keepPrevious recipe; the survivor being an aliased raw row is the
+    // worst case, so that's what we test.)
+    const source = new Subject<{ id: string; n: number }[]>()
+    const node$ = streamSelector(source.asObservable(), {
+      default: [] as { id: string; n: number }[],
+    })
+    node$.onChange(() => {})
+    node$.get()
+
+    source.next([{ id: 'a', n: 1 }, { id: 'b', n: 2 }, { id: 'c', n: 3 }, { id: 'd', n: 4 }])
+    const survivor = (node$.peek() as any)[3] // same instance Legend holds internally
+    source.next([survivor])
+    expect(node$.peek()).toEqual([{ id: 'd', n: 4 }])
+  })
+
   it('holds last value if the pipeline errors', () => {
     const source = new Subject<number>()
     const node$ = streamSelector(source.asObservable())

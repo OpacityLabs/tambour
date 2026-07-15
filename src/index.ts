@@ -16,6 +16,12 @@ export { asyncStorage, memoryStorage, mmkvStorage, type ConcordiaStorage } from 
 export { selector, type SelectorOptions } from './selector'
 export { selectorFamily, type FamilyOptions } from './selectorFamily'
 export { streamSelector, type StreamSelectorOptions } from './streamSelector'
+// EXPERIMENTAL — keyed remote-read primitive (spike; API not frozen).
+// The query node's value IS the result envelope: { data, pending, stale,
+// error, fetchedAt }. statusOf exists for command events only.
+export { query, invalidate, type QueryOptions, type QueryResult } from './query'
+export { statusOf } from './status'
+export { type EventStatus } from './events'
 export { update, type UpdateScope } from './update'
 export {
   event,

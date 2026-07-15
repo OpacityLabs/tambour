@@ -1,6 +1,27 @@
+import { batch, observable } from '@legendapp/state'
 import { Observable } from 'rxjs'
 import { currentOrigin, runWithOrigin } from './context'
 import { runEventError, runEventFire } from './interceptors'
+import type { ReadonlyNode } from './types'
+
+/** Observable in-flight status of a command event (see `statusOf`). */
+export interface EventStatus {
+  /** At least one invocation is currently running. */
+  pending: boolean
+  /** Number of running invocations (plain concurrency can overlap). */
+  inFlight: number
+  /** The last rejection; cleared on the next fire. Supersessions from
+   *  `concurrency: 'switch'` do not count as errors. */
+  error: unknown
+}
+
+const EVENT_STATUS = new WeakMap<object, any>()
+
+/** Internal: the status node for a command event, undefined for anything else
+ *  (streamEvents have no handler — nothing can be pending). */
+export function eventStatus(target: unknown): ReadonlyNode<EventStatus> | undefined {
+  return typeof target === 'function' ? EVENT_STATUS.get(target) : undefined
+}
 
 export interface EventOptions {
   /**
@@ -70,8 +91,22 @@ export function event(
   let inFlight: Promise<unknown> | null = null           // exhaust
   let controller: AbortController | null = null          // switch
 
+  const status$ = observable<EventStatus>({ pending: false, inFlight: 0, error: undefined })
+
+  const settle = (superseded: boolean, error?: unknown): void => {
+    batch(() => {
+      const n = Math.max(0, status$.inFlight.peek() - 1)
+      status$.assign(
+        // a switch-abort is a supersession, not a failure — don't record it
+        error !== undefined && !superseded
+          ? { pending: n > 0, inFlight: n, error }
+          : { pending: n > 0, inFlight: n },
+      )
+    })
+  }
+
   const fire = (...args: unknown[]): Promise<unknown> => {
-    if (concurrency === 'exhaust' && inFlight) return inFlight
+    if (concurrency === 'exhaust' && inFlight) return inFlight // coalesced: status untouched
 
     notify(ev, args)
 
@@ -81,11 +116,21 @@ export function event(
       controller = new AbortController()
       handlerArgs = [...args, controller.signal]
     }
+    const myController = controller
+
+    batch(() => {
+      status$.assign({ pending: true, inFlight: status$.inFlight.peek() + 1, error: undefined })
+    })
 
     const promise = (async () => {
       // async wrapper: a synchronously-throwing handler still rejects (never throws)
       return await runWithOrigin(name, () => handler(...handlerArgs))
     })()
+
+    promise.then(
+      () => settle(false),
+      error => settle(myController?.signal.aborted ?? false, error),
+    )
 
     if (concurrency === 'exhaust') {
       inFlight = promise
@@ -101,6 +146,7 @@ export function event(
   }
 
   const ev = makeInternals(fire, name)
+  EVENT_STATUS.set(ev, status$)
   return ev
 }
 

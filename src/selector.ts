@@ -1,5 +1,14 @@
-import { observable } from '@legendapp/state'
+import { isObservable, observable } from '@legendapp/state'
 import type { ReadonlyNode, ReadonlyNodeBase } from './types'
+
+/** Node check that never touches properties on Legend observables: accessing
+ *  even the `.get` PROPERTY of a synced node (streamSelector, family entry)
+ *  activates it — a module-level `selector(stream$, ...)` declaration would
+ *  start the pipeline at import time. isObservable is symbol-based and inert;
+ *  the property fallback only runs for plain wrapper nodes (equals-selectors),
+ *  which have no activation semantics. */
+const isNode = (v: unknown): boolean =>
+  isObservable(v) || typeof (v as { get?: unknown } | null | undefined)?.get === 'function'
 
 export interface SelectorOptions<R> {
   equals?: (a: R, b: R) => boolean
@@ -28,7 +37,7 @@ export function selector<A, B, C, D, E, F, R>(a: Node<A>, b: Node<B>, c: Node<C>
 export function selector(...args: unknown[]): any {
   const last = args[args.length - 1]
   const options: SelectorOptions<any> | undefined =
-    typeof last === 'object' && last !== null && typeof (last as any).get !== 'function'
+    typeof last === 'object' && last !== null && !isNode(last)
       ? (args.pop() as SelectorOptions<any>)
       : undefined
 
@@ -38,7 +47,7 @@ export function selector(...args: unknown[]): any {
   }
   const deps = args as Node<unknown>[]
   for (const d of deps) {
-    if (typeof (d as any)?.get !== 'function') {
+    if (!isNode(d)) {
       throw new Error('[concordia] selector: dependencies must be state nodes (atoms, node paths, or selectors)')
     }
   }

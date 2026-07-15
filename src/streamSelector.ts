@@ -34,7 +34,10 @@ export function streamSelector<T>(
       initial: opts?.default,
       subscribe: ({ update }) => {
         const sub: Subscription = source.subscribe({
-          next: value => update({ value }),
+          // mode 'set' is load-bearing: Legend's default update path MERGES
+          // keyed arrays, so a shrinking emission ([a,b,c,d] → [d]) would
+          // corrupt the node ([d,b,c,d]). Emissions replace wholesale.
+          next: value => update({ value, mode: 'set' }),
           // errors must not kill the node: log and hold last value
           error: err => console.error('[streamSelector] pipeline error:', err),
         })

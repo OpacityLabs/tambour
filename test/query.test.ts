@@ -1,0 +1,406 @@
+import { describe, expect, it } from 'vitest'
+import { observable } from '@legendapp/state'
+import { filter, map } from 'rxjs/operators'
+import { query, invalidate, replaceEqualDeep } from '../src/query'
+import { selector } from '../src/selector'
+import { streamSelector } from '../src/streamSelector'
+import { atomToStream } from '../src/bridges'
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+const tick = () => sleep(5) // activation + fetch kick-off are microtask-deferred
+
+/** A fetcher whose promises resolve only when the test says so. */
+function controlledFetcher<T>() {
+  const calls: { args: unknown[]; resolve: (v: T) => void; reject: (e: unknown) => void }[] = []
+  const fetcher = (...args: unknown[]) =>
+    new Promise<T>((resolve, reject) => {
+      calls.push({ args, resolve, reject })
+    })
+  return { fetcher, calls }
+}
+
+describe('query: pull activation', () => {
+  it('does not fetch until observed; serves default synchronously; lands the result', async () => {
+    const { fetcher, calls } = controlledFetcher<string[]>()
+    const books = query('books', fetcher, { default: [] as string[] })
+
+    const node$ = books('austen') as any
+    expect(calls.length).toBe(0) // creating the node is not observing it
+
+    const dispose = node$.onChange(() => {})
+    expect(node$.get().data).toEqual([]) // default, synchronously
+    expect(node$.get().stale).toBe(true) // virgin key is stale from construction
+    await tick()
+    expect(calls.length).toBe(1)
+    expect(calls[0]!.args).toEqual(['austen'])
+    expect(node$.get().pending).toBe(true)
+
+    calls[0]!.resolve(['Emma', 'Persuasion'])
+    await tick()
+    const result = node$.get()
+    expect(result.data).toEqual(['Emma', 'Persuasion'])
+    expect(result.pending).toBe(false)
+    expect(result.stale).toBe(false)
+    expect(result.fetchedAt).toBeTypeOf('number')
+    dispose()
+  })
+
+  it('dedupes: two observers of one key share one fetch; distinct keys fetch separately', async () => {
+    const { fetcher, calls } = controlledFetcher<string>()
+    const q = query('dedupe', fetcher)
+
+    const a1 = q('a') as any
+    const a2 = q('a') as any
+    expect(a1).toBe(a2) // same args → same node
+
+    const d1 = a1.onChange(() => {})
+    const d2 = a2.onChange(() => {})
+    a1.get(); a2.get()
+    await tick()
+    expect(calls.length).toBe(1) // one node, one request
+
+    const b = q('b') as any
+    const d3 = b.onChange(() => {})
+    b.get()
+    await tick()
+    expect(calls.length).toBe(2) // distinct key, its own request
+
+    calls[0]!.resolve('A')
+    calls[1]!.resolve('B')
+    await tick()
+    expect(a1.get().data).toBe('A')
+    expect(b.get().data).toBe('B')
+    d1(); d2(); d3()
+  })
+})
+
+describe('query: staleness', () => {
+  it('re-observation within staleTime serves the cache without fetching', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('fresh', fetcher, { staleTime: 10_000, gcTime: 10_000, default: 0 })
+
+    const node$ = q() as any
+    let dispose = node$.onChange(() => {})
+    node$.get()
+    await tick()
+    calls[0]!.resolve(42)
+    await tick()
+    expect(node$.get().data).toBe(42)
+
+    dispose() // unobserve
+    await sleep(20) // deactivation is async, but well under staleTime/gcTime
+
+    dispose = node$.onChange(() => {}) // re-observe
+    expect(node$.get().data).toBe(42) // cached value, synchronously
+    await tick()
+    expect(calls.length).toBe(1) // fresh → NO refetch
+    dispose()
+  })
+
+  it('stale re-observation serves the cache AND revalidates in the background', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('swr', fetcher, { default: 0 }) // staleTime 0 = always stale
+
+    const node$ = q() as any
+    let dispose = node$.onChange(() => {})
+    node$.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+    expect(node$.get().data).toBe(1)
+
+    dispose()
+    await sleep(20)
+
+    dispose = node$.onChange(() => {})
+    expect(node$.get().data).toBe(1) // old value served instantly (SWR)
+    await tick()
+    expect(calls.length).toBe(2) // background revalidation started
+    expect(node$.get().pending).toBe(true)
+    expect(node$.get().data).toBe(1) // still the old value while pending
+
+    calls[1]!.resolve(2)
+    await tick()
+    expect(node$.get().data).toBe(2)
+    dispose()
+  })
+})
+
+describe('query: invalidation', () => {
+  it('invalidating an active key refetches immediately', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('inv-active', fetcher, { staleTime: 60_000, default: 0 })
+
+    const node$ = q() as any
+    const dispose = node$.onChange(() => {})
+    node$.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+
+    invalidate(node$)
+    expect(node$.get().stale).toBe(true)
+    await tick()
+    expect(calls.length).toBe(2) // refetched despite being fresh
+    calls[1]!.resolve(2)
+    await tick()
+    expect(node$.get().data).toBe(2)
+    dispose()
+  })
+
+  it('invalidating an inactive key defers the refetch to the next observation', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('inv-idle', fetcher, { staleTime: 60_000, gcTime: 10_000, default: 0 })
+
+    const node$ = q() as any
+    let dispose = node$.onChange(() => {})
+    node$.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+    dispose()
+    await sleep(20)
+
+    invalidate(node$)
+    await sleep(20)
+    expect(calls.length).toBe(1) // nobody is watching: no fetch
+
+    dispose = node$.onChange(() => {})
+    expect(node$.get().data).toBe(1) // cached value still served
+    await tick()
+    expect(calls.length).toBe(2) // revalidates on observation
+    dispose()
+  })
+
+  it('invalidate(family) hits every cached key; mid-flight invalidation refetches on settle', async () => {
+    const { fetcher, calls } = controlledFetcher<string>()
+    const q = query('inv-family', fetcher, { staleTime: 60_000 })
+
+    const a = q('a') as any
+    const b = q('b') as any
+    const da = a.onChange(() => {})
+    const db = b.onChange(() => {})
+    a.get(); b.get()
+    await tick()
+    calls[0]!.resolve('a1') // 'a' settles; 'b' stays in flight
+    await tick()
+
+    invalidate(q as any)
+    await tick()
+    expect(calls.length).toBe(3) // 'a' (active + settled) refetched now
+
+    calls[1]!.resolve('b1') // 'b' settles its ORIGINAL flight...
+    await tick()
+    expect(calls.length).toBe(4) // ...and refetches because it was invalidated mid-flight
+
+    calls[2]!.resolve('a2')
+    calls[3]!.resolve('b2')
+    await tick()
+    expect(a.get().data).toBe('a2')
+    expect(b.get().data).toBe('b2')
+    da(); db()
+  })
+})
+
+describe('query: entry isolation', () => {
+  it('entries do not share the default instance — one key\'s data must not leak into another', async () => {
+    const { fetcher, calls } = controlledFetcher<{ id: string }[]>()
+    const q = query('iso', fetcher, { default: [] as { id: string }[] })
+
+    const a = q('a') as any
+    const da = a.onChange(() => {})
+    a.get()
+    await tick()
+    calls[0]!.resolve([{ id: '1' }, { id: '2' }, { id: '3' }])
+    await tick()
+    expect(a.get().data).toEqual([{ id: '1' }, { id: '2' }, { id: '3' }])
+
+    // a key created AFTER another key fulfilled must start from ITS OWN default
+    const b = q('b') as any
+    expect(b.peek().data).toEqual([])
+
+    const db = b.onChange(() => {})
+    b.get()
+    await tick()
+    calls[1]!.resolve([{ id: '2' }])
+    await tick()
+    expect(b.get().data).toEqual([{ id: '2' }]) // exactly — no merge artifacts, no duplicates
+    expect(a.get().data).toEqual([{ id: '1' }, { id: '2' }, { id: '3' }]) // untouched
+
+    da(); db()
+  })
+})
+
+describe('query: structural sharing', () => {
+  it('a refetch returning deep-equal data keeps identity and fires no data notification', async () => {
+    const { fetcher, calls } = controlledFetcher<{ list: { id: number }[] }>()
+    const q = query('shared', fetcher) // always stale
+
+    const node$ = q() as any
+    let dispose = node$.onChange(() => {})
+    node$.get()
+    await tick()
+    calls[0]!.resolve({ list: [{ id: 1 }, { id: 2 }] })
+    await tick()
+    const first = node$.data.get()
+
+    dispose()
+    await sleep(20)
+    dispose = node$.onChange(() => {})
+    node$.get()
+    await tick()
+    expect(calls.length).toBe(2)
+
+    const dataNotifications: unknown[] = []
+    const d2 = node$.data.onChange(({ value }: any) => dataNotifications.push(value))
+    calls[1]!.resolve({ list: [{ id: 1 }, { id: 2 }] }) // same payload, new objects
+    await tick()
+
+    expect(node$.data.get()).toBe(first) // identity preserved end to end
+    expect(dataNotifications.length).toBe(0) // data-only subscribers never re-fire
+    expect(node$.get().fetchedAt).toBeTypeOf('number') // envelope DID advance
+    dispose(); d2()
+  })
+
+  it('replaceEqualDeep reuses equal subtrees inside changed payloads', () => {
+    const a = { list: [{ id: 1 }, { id: 2 }], meta: { page: 1 } }
+    const b = { list: [{ id: 1 }, { id: 3 }], meta: { page: 1 } }
+    const out = replaceEqualDeep(a, b) as typeof b
+    expect(out).not.toBe(a)
+    expect(out.list[0]).toBe(a.list[0]) // unchanged row keeps its reference
+    expect(out.meta).toBe(a.meta)
+    expect(out.list[1]).toEqual({ id: 3 })
+  })
+})
+
+describe('query: envelope atomicity', () => {
+  it('no frame ever carries fresh data with pending still true', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('atomic', fetcher, { default: 0 })
+
+    const node$ = q() as any
+    const frames: { data: number; pending: boolean }[] = []
+    const dispose = node$.onChange(({ value }: any) =>
+      frames.push({ data: value.data, pending: value.pending }),
+    )
+    node$.get()
+    await tick()
+
+    calls[0]!.resolve(7)
+    await tick()
+
+    // data and status live in ONE node written in ONE batch: the frame where
+    // data=7 arrives must already say pending=false
+    const landing = frames.find(f => f.data === 7)
+    expect(landing).toBeDefined()
+    expect(landing!.pending).toBe(false)
+    expect(frames.some(f => f.data === 7 && f.pending)).toBe(false)
+    dispose()
+  })
+})
+
+describe('query: gc', () => {
+  it('an unobserved entry evicts after gcTime and refetches fresh on the next observation', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('gc', fetcher, { staleTime: 60_000, gcTime: 30, default: 0 })
+
+    const node1$ = q() as any
+    let dispose = node1$.onChange(() => {})
+    node1$.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+    dispose()
+
+    await sleep(80) // > gcTime + async deactivation
+
+    const node2$ = q() as any
+    expect(node2$).not.toBe(node1$) // evicted: a NEW entry
+    dispose = node2$.onChange(() => {})
+    expect(node2$.get().data).toBe(0) // cached value is gone — default again
+    await tick()
+    expect(calls.length).toBe(2) // refetches despite generous staleTime
+    calls[1]!.resolve(2)
+    await tick()
+    expect(node2$.get().data).toBe(2)
+    dispose()
+  })
+})
+
+describe('query: errors', () => {
+  it('a rejection lands in the envelope, holds the last data, and stays stale for retry', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('err', fetcher, { staleTime: 60_000, default: 0 })
+
+    const node$ = q() as any
+    let dispose = node$.onChange(() => {})
+    node$.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+
+    invalidate(node$)
+    await tick()
+    calls[1]!.reject(new Error('boom'))
+    await tick()
+
+    const result = node$.get()
+    expect(result.pending).toBe(false)
+    expect((result.error as Error).message).toBe('boom')
+    expect(result.stale).toBe(true)
+    expect(result.data).toBe(1) // last good value held
+
+    dispose()
+    await sleep(20)
+    dispose = node$.onChange(() => {}) // re-observation retries despite staleTime
+    node$.get()
+    await tick()
+    expect(calls.length).toBe(3)
+    calls[2]!.resolve(2)
+    await tick()
+    expect(node$.get().data).toBe(2)
+    expect(node$.get().error).toBeUndefined()
+    dispose()
+  })
+})
+
+describe('the keepPrevious recipe (temporal gating, no new API)', () => {
+  it('holds the previous key\'s settled value while the next key is in flight', async () => {
+    const { fetcher, calls } = controlledFetcher<string[]>()
+    const books = query('kp-books', fetcher, { staleTime: 60_000, default: [] as string[] })
+    const key$ = observable('austen') as any
+
+    // combine in space: the envelope IS the join — data + status, one node,
+    // one sync selector for the current key (thunk form: dynamic keys)
+    const searchState$ = selector(() => (books(key$.get()) as any).get()) as any
+
+    // ...then gate in time (suppress unsettled frames → downstream holds last
+    // settled). Gate on pending AND stale: `stale` is true synchronously from
+    // construction, covering the microtask gap before `pending` flips.
+    const settled$ = streamSelector(
+      atomToStream<any>(searchState$).pipe(
+        filter(s => !s.pending && !s.stale),
+        map(s => s.data as string[]),
+      ),
+      { default: [] as string[] },
+    ) as any
+
+    const dispose = settled$.onChange(() => {})
+    settled$.get()
+    await tick()
+    calls[0]!.resolve(['Emma'])
+    await tick()
+    expect(settled$.get()).toEqual(['Emma'])
+
+    key$.set('tolstoy') // switch keys: new fetch begins
+    await tick()
+    expect(calls.length).toBe(2)
+    expect(searchState$.get().data).toEqual([]) // raw view: default while pending
+    expect(settled$.get()).toEqual(['Emma']) // gated view: previous list held
+
+    calls[1]!.resolve(['War and Peace'])
+    await tick()
+    expect(settled$.get()).toEqual(['War and Peace'])
+    dispose()
+  })
+})

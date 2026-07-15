@@ -184,6 +184,10 @@ Contract:
   distinguish (e.g. combineLatest gating). With it, `undefined` is unrepresentable.
 - **Errors don't kill the node**: the pipeline error goes to interceptors/log; the
   node holds its last value.
+- **Emissions replace the node value wholesale.** Legend's default synced-update
+  path *merges* keyed arrays — a shrinking emission (`[a,b,c,d] → [d]`) would
+  corrupt the node to `[d,b,c,d]`. streamSelector pins `mode: 'set'`
+  (found via the showcase app; regression in test/streamSelector.test.ts).
 - Components consume it with the same `use$` as everything else — call sites never
   know whether a value is sync or temporal.
 
@@ -203,6 +207,63 @@ Default to `selector`; reach for `streamSelector` only when the derivation has a
 temporal dimension (gating, debouncing, external sources, event streams, ordering).
 Rx maximalism — routing trivially-sync derivations through pipelines — is the
 failure mode of this architecture. This rule is lintable and teachable.
+
+## Queries — EXPERIMENTAL (Phase 5 spike, API not frozen)
+
+The third read primitive: `selector` (sync), `streamSelector` (temporal),
+`query` (keyed remote). Decided in the async design dialog (2026-07); shipped
+as a spike in `src/query.ts` gated on dogfooding before freeze.
+
+```ts
+export const libraryBooks = query('library/books',
+  (q: string) => api.fetchBooks(q),
+  { staleTime: 15_000, gcTime: 60_000, default: [] as Book[] })
+
+// the node's value IS the result envelope — data and metadata travel together
+const { data, pending } = use$(libraryBooks('austen'))  // observe = fetch if stale
+const books = use$(libraryBooks('austen').data)         // data-only subscription
+invalidate(libraryBooks)                                // or invalidate(libraryBooks(args))
+```
+
+- **Server data lives inside the tree; there is no second cache.** TanStack's
+  *semantics* (dedupe, staleness, gc, invalidation) on concordia's *substrate*:
+  one devtools timeline, atom-style persistence, selectors compose over query
+  nodes for free. A TanStack-shaped app can still use TanStack beside us; we
+  don't ship an adapter.
+- **Pull-based.** Observing a key is what fetches it (missing or stale →
+  fetch; fresh → serve cache). Nothing is "kicked off": dedupe falls out of
+  node identity (same args → same node → one request), gc out of refCount
+  eviction, stale-while-revalidate out of activation. Dynamic keys use the
+  thunk selector (the sanctioned escape hatch).
+- **The bright line** (what earns machinery vs. stays a recipe): identity,
+  lifecycle, staleness, dedupe, invalidation, structural sharing are core.
+  `enabled`, keep-previous (six-line temporal-gating recipe gating on
+  `!pending && !stale` — see `test/query.test.ts`), pagination, suspense are
+  recipes until dogfooding bleeds. Retry/timeout will share option vocabulary
+  with `event`. Note: activation flips `pending` one microtask after
+  observation; `stale` is the synchronous "not yet trustworthy" signal.
+- **The envelope is the API**: a query node's value is `{ data, pending,
+  stale, error, fetchedAt }`. Legend's granularity makes it free —
+  `use$(node.data)` never re-renders on a `fetchedAt` bump — and because data
+  and status are ONE node written in ONE batch, a torn frame (fresh data +
+  `pending: true`) is structurally impossible. Refetches apply structural
+  sharing (deep-equal payloads keep old references → zero data notifications).
+  (Decided 2026-07-15, replacing an earlier `statusOf(queryNode)` accessor:
+  the metadata should come back with the query, and consumers pick fields.)
+- **`statusOf` exists for command events only** — `statusOf(commandEvent)` →
+  `{ pending, inFlight, error }` (exhaust-coalesced re-fires stay truthful;
+  switch supersessions are not errors). Events need an accessor because a
+  command has no node to carry metadata; queries do not.
+- **Design-rule-1 amendment**: *user* writes go through `update`; *runtime*
+  writes (hydration, stream emissions, query fulfillment) are system-named.
+  Query fulfillment is the same write class streamSelector emissions already
+  were — every state change still has a name on the timeline.
+- **Open items before freeze**: key equality (spike uses `JSON.stringify(args)`
+  — property-order sensitive), `refetchOn: ['focus','reconnect']` via an RN
+  adapter (AppState/NetInfo → streamEvents), retry/timeout options, devtools
+  entries for query lifecycle, and the streamSelector re-activation gap
+  (mitigated for atomToStream-fed pipelines, which re-prime on subscribe —
+  verified in `test/chain.test.ts`).
 
 ---
 
