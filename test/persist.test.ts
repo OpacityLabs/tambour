@@ -108,6 +108,62 @@ describe('persistence: migrations', () => {
   })
 })
 
+describe('persistence: throttled write-through', () => {
+  it('first change after a quiet period writes immediately (leading edge)', () => {
+    vi.useFakeTimers()
+    const storage = memoryStorage()
+    const cart$ = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
+    const bump = update('cart/bump', { cart: cart$ }, d => { d.cart.total += 1 })
+
+    bump()
+    expect(JSON.parse(storage.data.get('cart')!).data).toEqual({ total: 1 })
+    vi.useRealTimers()
+  })
+
+  it('a burst coalesces into one trailing write of the latest value', () => {
+    vi.useFakeTimers()
+    const storage = memoryStorage()
+    const setString = vi.spyOn(storage, 'setString')
+    const cart$ = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
+    const bump = update('cart/bump', { cart: cart$ }, d => { d.cart.total += 1 })
+    setString.mockClear()               // ignore the initial materialization write
+
+    bump()                              // leading
+    bump()                              // window opens — held
+    bump()                              // still held; latest value advances
+    expect(setString).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(storage.data.get('cart')!).data).toEqual({ total: 1 })
+
+    vi.advanceTimersByTime(500)         // trailing write fires with the latest
+    expect(setString).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(storage.data.get('cart')!).data).toEqual({ total: 3 })
+    vi.useRealTimers()
+  })
+
+  it('after the window passes quietly, the next change is leading again', () => {
+    vi.useFakeTimers()
+    const storage = memoryStorage()
+    const cart$ = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
+    const bump = update('cart/bump', { cart: cart$ }, d => { d.cart.total += 1 })
+
+    bump()
+    vi.advanceTimersByTime(600)
+    bump()
+    expect(JSON.parse(storage.data.get('cart')!).data).toEqual({ total: 2 })
+    vi.useRealTimers()
+  })
+
+  it('hydration never counts as a change to throttle or write back', () => {
+    vi.useFakeTimers()
+    const storage = memoryStorage({ cart: envelope({ total: 9 }) })
+    const setString = vi.spyOn(storage, 'setString')
+    atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
+    vi.advanceTimersByTime(1000)
+    expect(setString).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+})
+
 describe('persistence: async storage', () => {
   it('starts at initial, flips hydration when the read resolves', async () => {
     const storage = asyncStorage(memoryStorage({ cart: envelope({ total: 42 }) }))

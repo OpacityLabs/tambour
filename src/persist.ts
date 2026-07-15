@@ -11,6 +11,14 @@ export interface PersistConfig {
   migrations?: Record<number, (previous: any) => any>
   /** Storage key — defaults to the atom name. */
   key?: string
+  /** Collapse write bursts: the first change after a quiet period writes
+   *  immediately (leading edge); further changes inside the window coalesce
+   *  into one trailing write of the LATEST value. For large atoms whose
+   *  updates arrive in bursts (dial/slider commits), this bounds the
+   *  stringify+write cost to one per window instead of one per change.
+   *  Trade-off: a hard kill inside the window can lose up to `throttleMs` of
+   *  changes — keep it small. Default 0 (write through on every change). */
+  throttleMs?: number
 }
 
 export interface PersistHandle {
@@ -78,9 +86,34 @@ export function persistAtom(node$: any, atomName: string, config: PersistConfig)
         })
       : (applyStored(raw), Promise.resolve())
 
+  const throttleMs = config.throttleMs ?? 0
+  const write = (value: unknown): void => {
+    void config.storage.setString(key, JSON.stringify({ v: targetVersion, data: value }))
+  }
+
+  let lastWriteAt = -Infinity
+  let trailing: ReturnType<typeof setTimeout> | null = null
+  let latest: unknown
+
   node$.onChange(({ value }: { value: unknown }) => {
     if (applyingStored) return
-    void config.storage.setString(key, JSON.stringify({ v: targetVersion, data: value }))
+    if (!throttleMs) {
+      write(value)
+      return
+    }
+    latest = value
+    if (trailing) return               // a trailing write will pick up `latest`
+    const sinceLast = Date.now() - lastWriteAt
+    if (sinceLast >= throttleMs) {
+      lastWriteAt = Date.now()
+      write(value)
+    } else {
+      trailing = setTimeout(() => {
+        trailing = null
+        lastWriteAt = Date.now()
+        write(latest)
+      }, throttleMs - sinceLast)
+    }
   })
 
   return { hydrated$, whenHydrated }
