@@ -169,6 +169,32 @@ describe('mutation invalidates on settle', () => {
     expect(received).toEqual([['x']]) // just the call args, signal stripped
   })
 
+  it('with retry, invalidation runs ONCE on the final settle — never per attempt', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('m/inv-retry', fetcher, { staleTime: 60_000, default: 0 })
+
+    const node$ = q() as any
+    const dispose = node$.onChange(() => {})
+    node$.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+
+    let attempts = 0
+    const save = mutation('m/retrying', async () => {
+      attempts++
+      if (attempts < 3) throw new Error('flaky')
+    }, { retry: 2, retryDelay: 0, invalidates: [q] })
+
+    await save()
+    await tick()
+    expect(attempts).toBe(3)
+    expect(calls.length).toBe(2) // exactly one refetch — failed attempts invalidated nothing
+    calls[1]!.resolve(2)
+    await tick()
+    dispose()
+  })
+
   it('switch: a superseded run never invalidates; the surviving run does — once', async () => {
     const { fetcher, calls } = controlledFetcher<number>()
     const q = query('m/inv-switch', fetcher, { staleTime: 60_000, default: 0 })

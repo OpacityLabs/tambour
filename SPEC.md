@@ -268,19 +268,20 @@ invalidate(libraryBooks)                                // or invalidate(library
   Re-calling `family(args)` per render is the intended pattern (~µs hash →
   same node → stable use$ subscription); hot paths hoist the call into a
   selector.
-- **Open items before freeze**: retry/timeout options on `event` (shared
-  vocabulary with query; zero-retry default — see Mutations), `refetchOn:
-  ['focus','reconnect']` via an RN adapter (AppState/NetInfo → streamEvents),
-  devtools entries for query lifecycle, and the streamSelector re-activation
-  gap (mitigated for atomToStream-fed pipelines, which re-prime on
-  subscribe — verified in `test/chain.test.ts`).
+- **Open items before freeze**: query-side fetch retry (the event
+  retry/timeout vocabulary exists — see Events — and would wire into the
+  fetch path if dogfooding demands), `refetchOn: ['focus','reconnect']` via
+  an RN adapter (AppState/NetInfo → streamEvents), devtools entries for
+  query lifecycle, and the streamSelector re-activation gap (mitigated for
+  atomToStream-fed pipelines, which re-prime on subscribe — verified in
+  `test/chain.test.ts`).
 
 ## Mutations — EXPERIMENTAL (API not frozen)
 
 Decided in the mutation design dialog (2026-07-16). **No parallel command
 layer**: a mutation IS an `event` — same timeline entry, `statusOf`,
-`eventToStream` tap, concurrency policies, and every future event option
-(retry/timeout) for free. `mutation()` is the batteries-included sugar so
+`eventToStream` tap, concurrency policies, and every event option including
+retry/timeout for free. `mutation()` is the batteries-included sugar so
 status/completion/error are just there, and so mutation-specific behavior
 has a non-breaking home if it ever earns more:
 
@@ -319,7 +320,9 @@ await renameTodo('t1', 'buy milk')                           // plain typed asyn
   the args trips TS's rest-tuple variance check, and a prefix-signature
   union breaks contextual typing (probed; see `test/mutation.typecheck.ts`).
   Runs on success AND error settles (a failed request may have landed
-  server-side; TanStack's onSettled guidance) — never for superseded runs.
+  server-side; TanStack's onSettled guidance) — never for superseded runs,
+  and under `retry`, exactly once on the FINAL settle, never per attempt
+  (invalidation rides the event's internal settle seam, not the handler).
   Result-dependent targets stay in the handler, which holds the result.
   The function form answers *which keys*, never *whether* — conditional
   invalidation is control flow and lives in the handler.
@@ -524,6 +527,19 @@ awaited by its caller *and* observed by a pipeline, neither knowing about the ot
   parameter** — `async (id: string, signal: AbortSignal) => api.get(id, { signal })` —
   and the types only surface that parameter when a policy is set. No policy, no
   extra concepts.
+- **Retry/timeout are event options** (built 2026-07-16): `retry` — a number
+  (max retries; `retry: 3` → at most 4 attempts) or `(failureCount, error) =>
+  boolean`; **default 0** — the runtime can't know a handler is idempotent, so
+  repeating a server write is opt-in per event. `retryDelay` — ms or
+  `(failureCount, error) => ms`; default exponential 1s, 2s, 4s… capped 30s.
+  `timeout` — per-ATTEMPT budget; a late attempt fails with `TimeoutError`
+  (exported) and retries if allowed; the underlying work is not cancelled and
+  is deliberately NOT wired to the switch AbortSignal, whose abort means
+  supersession (silent), never failure. Retries are ONE logical run:
+  `pending` spans attempts, `error`/`success` settle only on the final
+  outcome, superseded runs never retry (not even out of backoff), and
+  interceptors see only the final error. Query's fetch path may adopt the
+  same vocabulary later if dogfooding demands.
 - **Errors are runtime-handled too**: awaited calls reject normally; unawaited fires
   additionally route through interceptors/log so nothing vanishes into
   unhandled-rejection land.

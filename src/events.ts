@@ -37,7 +37,49 @@ export interface EventOptions {
    * omitted   — plain async: call twice, runs twice, nothing tracked.
    */
   concurrency?: 'switch' | 'exhaust'
+  /**
+   * Retries after a failed attempt: a number allows up to that many retries
+   * (`retry: 3` → at most 4 attempts); a predicate receives (failureCount
+   * starting at 1, error) and returns true to retry. DEFAULT: 0 — the runtime
+   * cannot know a handler is idempotent, so repeating a server write is
+   * opt-in per event. Retries happen inside ONE logical run: `pending` spans
+   * attempts, `error`/`success` settle only on the final outcome, and a
+   * switch-superseded run never retries.
+   */
+  retry?: number | ((failureCount: number, error: unknown) => boolean)
+  /**
+   * Delay before each retry, in ms — a number, or (failureCount, error) => ms.
+   * Default: exponential 1s, 2s, 4s… capped at 30s (`defaultRetryDelay`).
+   */
+  retryDelay?: number | ((failureCount: number, error: unknown) => number)
+  /**
+   * Per-ATTEMPT budget in ms: a late attempt fails with TimeoutError (and
+   * retries, if `retry` allows). The underlying work is NOT cancelled — the
+   * late result is ignored. Deliberately not wired to the switch AbortSignal,
+   * whose abort means supersession (silent), never failure.
+   */
+  timeout?: number
 }
+
+/** Default retry backoff: 1s, 2s, 4s… capped at 30s. */
+export const defaultRetryDelay = (failureCount: number): number =>
+  Math.min(1000 * 2 ** (failureCount - 1), 30_000)
+
+/** Thrown when an attempt exceeds `timeout` ms. Retryable like any failure. */
+export class TimeoutError extends Error {
+  constructor(eventName: string, ms: number) {
+    super(`[concordia] event '${eventName}' attempt timed out after ${ms}ms`)
+    this.name = 'TimeoutError'
+  }
+}
+
+/** INTERNAL seam (not exported from the package index): called exactly once
+ *  per run at settle with the ORIGINAL call args — never the switch signal,
+ *  never per-attempt. mutation() hangs `invalidates` here so invalidation
+ *  can't run for intermediate retry failures or superseded runs. */
+export const kOnSettle = Symbol('concordia.onSettle')
+
+type OnSettle = (superseded: boolean, error: unknown, args: unknown[]) => void
 
 type Listener = (payload: unknown) => void
 
@@ -79,7 +121,7 @@ function notify(ev: EventInternals, args: unknown[]): void {
 export function event<A extends unknown[], R>(
   name: string,
   handler: (...args: [...A, AbortSignal]) => R | Promise<R>,
-  options: { concurrency: 'switch' },
+  options: EventOptions & { concurrency: 'switch' },
 ): CommandEvent<A, R>
 export function event<A extends unknown[], R>(
   name: string,
@@ -92,6 +134,15 @@ export function event(
   options?: EventOptions,
 ): CommandEvent<any[], any> {
   const concurrency = options?.concurrency
+  const retryOpt = options?.retry ?? 0
+  const shouldRetry =
+    typeof retryOpt === 'function' ? retryOpt : (n: number) => n <= retryOpt
+  const delayOpt = options?.retryDelay ?? defaultRetryDelay
+  const delayFor = typeof delayOpt === 'function' ? delayOpt : () => delayOpt
+  const timeoutMs = options?.timeout
+  const onSettle = (options as Record<symbol, unknown> | undefined)?.[kOnSettle] as
+    | OnSettle
+    | undefined
 
   let inFlight: Promise<unknown> | null = null           // exhaust
   let controller: AbortController | null = null          // switch
@@ -130,14 +181,60 @@ export function event(
       })
     })
 
+    // one attempt, optionally raced against the per-attempt timeout budget.
+    // The losing run keeps going but its result lands on an already-settled
+    // promise (handled — no unhandled rejection, no cancellation implied).
+    const attempt = (): Promise<unknown> => {
+      const run = (async () => await runWithOrigin(name, () => handler(...handlerArgs)))()
+      if (timeoutMs === undefined) return run
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new TimeoutError(name, timeoutMs)), timeoutMs)
+        run.then(
+          value => { clearTimeout(timer); resolve(value) },
+          error => { clearTimeout(timer); reject(error) },
+        )
+      })
+    }
+
     const promise = (async () => {
-      // async wrapper: a synchronously-throwing handler still rejects (never throws)
-      return await runWithOrigin(name, () => handler(...handlerArgs))
+      // async wrapper: a synchronously-throwing handler still rejects (never
+      // throws). Retries live INSIDE this one logical run — pending spans
+      // attempts; only the final outcome settles into error/success.
+      let failureCount = 0
+      for (;;) {
+        try {
+          return await attempt()
+        } catch (error) {
+          if (myController?.signal.aborted) throw error // superseded: never retry
+          failureCount += 1
+          if (!shouldRetry(failureCount, error)) throw error
+          const delay = delayFor(failureCount, error)
+          if (delay > 0) await new Promise(r => setTimeout(r, delay))
+          if (myController?.signal.aborted) throw error // superseded during backoff
+        }
+      }
     })()
 
+    const fireOnSettle = (superseded: boolean, error?: unknown): void => {
+      if (!onSettle) return
+      try {
+        onSettle(superseded, error, args)
+      } catch (hookError) {
+        runEventError(name, hookError, args) // e.g. a bad invalidation target
+      }
+    }
+
     promise.then(
-      () => settle(myController?.signal.aborted ?? false),
-      error => settle(myController?.signal.aborted ?? false, error),
+      () => {
+        const superseded = myController?.signal.aborted ?? false
+        settle(superseded)
+        fireOnSettle(superseded)
+      },
+      error => {
+        const superseded = myController?.signal.aborted ?? false
+        settle(superseded, error)
+        fireOnSettle(superseded, error)
+      },
     )
 
     if (concurrency === 'exhaust') {

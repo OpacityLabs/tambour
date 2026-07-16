@@ -30,6 +30,7 @@ export {
   event,
   eventToStream,
   streamEvent,
+  TimeoutError,
   type CommandEvent,
   type EventOptions,
   type StreamEvent,

@@ -11,7 +11,7 @@
  * prefix signatures breaks contextual typing of unannotated params. The
  * tuple form keeps every spelling below inferring cleanly.
  */
-import { invalidate, mutation, query, statusOf } from '../src'
+import { invalidate, mutation, query, statusOf, TimeoutError } from '../src'
 
 interface Todo { id: string; title: string; done: boolean }
 
@@ -58,6 +58,17 @@ export const bumpAll = mutation('tc/bumpAll',
 export const bumpStatic = mutation('tc/bumpStatic',
   async (_id: string) => {},
   { invalidates: () => [todoList] })
+
+// ---- retry/timeout are event options — mutations inherit them ----------
+// (zero-retry default; predicate form is fully typed; TimeoutError is public)
+export const flakySave = mutation('tc/flaky',
+  async (id: string) => { await api.renameTodo(id, 'x') },
+  {
+    retry: (failureCount, error) => failureCount < 3 && !(error instanceof TimeoutError),
+    retryDelay: 250,
+    timeout: 10_000,
+    invalidates: ([id]) => [todoDetail(id)],
+  })
 
 // ---- carried metadata: on the function, same node as statusOf ----------
 const success: boolean = renameTodo.status.get().success

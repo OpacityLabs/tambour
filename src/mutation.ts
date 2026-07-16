@@ -1,4 +1,11 @@
-import { event, eventStatus, type CommandEvent, type EventOptions, type EventStatus } from './events'
+import {
+  event,
+  eventStatus,
+  kOnSettle,
+  type CommandEvent,
+  type EventOptions,
+  type EventStatus,
+} from './events'
 import { invalidate } from './query'
 import type { ReadonlyNode } from './types'
 
@@ -69,25 +76,20 @@ export function mutation(
 ): Mutation<any[], any> {
   const invalidates = options?.invalidates
 
-  const wrapped = invalidates
-    ? async (...args: any[]) => {
-        try {
-          return await handler(...args)
-        } finally {
-          // with 'switch' the runtime appended the AbortSignal as the last arg
-          const signal =
-            options?.concurrency === 'switch' ? (args[args.length - 1] as AbortSignal) : undefined
-          if (!signal?.aborted) {
-            const callArgs = signal ? args.slice(0, -1) : args
-            const targets =
-              typeof invalidates === 'function' ? invalidates(callArgs) : invalidates
-            for (const t of targets) invalidate(t)
-          }
+  // invalidation rides the event's settle seam, NOT a handler wrapper: with
+  // retry it must run once on the final outcome (never per attempt), and a
+  // superseded run must never invalidate. The seam receives the ORIGINAL
+  // call args — the switch AbortSignal never reaches the callback.
+  const ev = event(name, handler, {
+    ...options,
+    [kOnSettle]: invalidates
+      ? (superseded: boolean, _error: unknown, args: unknown[]) => {
+          if (superseded) return
+          const targets = typeof invalidates === 'function' ? invalidates(args) : invalidates
+          for (const t of targets) invalidate(t)
         }
-      }
-    : handler
-
-  const ev = event(name, wrapped, options)
+      : undefined,
+  } as EventOptions)
   Object.defineProperty(ev, 'status', { value: eventStatus(ev) })
   return ev as unknown as Mutation<any[], any>
 }
