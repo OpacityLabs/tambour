@@ -10,13 +10,14 @@ import {
   atom,
   atomToStream,
   invalidate,
+  mutation,
   query,
   selector,
   streamSelector,
   update,
 } from 'concordia'
 import { debounceTime, distinctUntilChanged, filter, map } from 'rxjs/operators'
-import { fetchBooks, type Book } from '../api'
+import { donateBook, fetchBooks, type Book } from '../api'
 
 export const searchUi$ = atom('searchUi', {
   query: '',
@@ -80,3 +81,12 @@ export const visibleBooks$ = selector(() => {
 
 /** Mark every cached search stale; the active key refetches immediately. */
 export const refetchBooks = () => invalidate(libraryBooks)
+
+// A server WRITE with the batteries attached: an event underneath (same
+// timeline entry, statusOf, eventToStream), plus carried status on the
+// function and declarative invalidation — settle marks every cached search
+// stale, and the active key refetches itself. No imperative refetch here.
+export const donate = mutation('library/donate', () => donateBook(), {
+  invalidates: [libraryBooks],
+  concurrency: 'exhaust', // submit-style, no args — mash-safe
+})

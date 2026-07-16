@@ -41,6 +41,25 @@ export async function fetchBooks(q: string): Promise<Book[]> {
   )
 }
 
+const GIFTS: Omit<Book, 'id'>[] = [
+  { title: 'The Left Hand of Darkness', author: 'Ursula K. Le Guin', written: 1969 },
+  { title: 'Middlemarch', author: 'George Eliot', written: 1871 },
+  { title: 'Jane Eyre', author: 'Charlotte Brontë', written: 1847 },
+  { title: 'The Master and Margarita', author: 'Mikhail Bulgakov', written: 1967 },
+]
+let donations = 0
+
+/** Donate the next gift book to the library — a real server WRITE. */
+export async function donateBook(): Promise<Book> {
+  const gift = GIFTS[donations % GIFTS.length]!
+  donations++
+  console.info(`[api] donateBook(${JSON.stringify(gift.title)})`)
+  await sleep(800)
+  const book = { id: `gift-${donations}`, ...gift }
+  LIBRARY.push(book)
+  return book
+}
+
 export interface ServerTodo {
   id: string
   title: string

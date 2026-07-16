@@ -129,3 +129,108 @@ describe('update: surgical notification (the fine-grained promise)', () => {
     expect(totalListener).not.toHaveBeenCalled()      // sibling key untouched
   })
 })
+
+describe('update: the returned Undo thunk', () => {
+  it('restores exactly the touched leaves, across every atom in scope', () => {
+    const cart$ = observable({ items: ['x'], total: 10 }) as any
+    const orders$ = observable({ list: [] as string[] }) as any
+
+    const checkout = update('undo/checkout', { cart: cart$, orders: orders$ }, d => {
+      d.orders.list.push('order-1')
+      d.cart.items = []
+      d.cart.total = 0
+    })
+
+    const undo = checkout()
+    expect(cart$.peek()).toEqual({ items: [], total: 0 })
+
+    // the rollback is one batch across BOTH atoms, like the forward write
+    const cartListener = vi.fn()
+    const ordersListener = vi.fn()
+    cart$.onChange(cartListener)
+    orders$.onChange(ordersListener)
+
+    undo()
+    expect(cart$.peek()).toEqual({ items: ['x'], total: 10 })
+    expect(orders$.peek()).toEqual({ list: [] })
+    expect(cartListener).toHaveBeenCalledTimes(1)   // two leaves restored, one notification
+    expect(ordersListener).toHaveBeenCalledTimes(1)
+  })
+
+  it('later writes to OTHER leaves survive the rollback (vs snapshot-restore)', () => {
+    const a$ = observable({ x: 0, y: 0 }) as any
+    const setX = update('undo/setX', { a: a$ }, (d, v: number) => { d.a.x = v })
+    const setY = update('undo/setY', { a: a$ }, (d, v: number) => { d.a.y = v })
+
+    const undo = setX(1)   // optimistic write
+    setY(50)               // a DIFFERENT leaf changes during the request window
+
+    undo()                 // rollback the optimistic write only
+    expect(a$.peek()).toEqual({ x: 0, y: 50 }) // x restored, y survives
+  })
+
+  it('is one-shot: the second call is a warning no-op, not a double-remove', () => {
+    const list$ = observable({ items: ['a', 'b'] }) as any
+    const push = update('undo/push', { l: list$ }, (d, v: string) => { d.l.items.push(v) })
+
+    const undo = push('c')
+    expect(list$.items.peek()).toEqual(['a', 'b', 'c'])
+
+    undo()
+    expect(list$.items.peek()).toEqual(['a', 'b']) // insert undone by remove
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    undo() // spent — must NOT remove 'b'
+    expect(list$.items.peek()).toEqual(['a', 'b'])
+    expect(warn).toHaveBeenCalledOnce()
+    warn.mockRestore()
+  })
+
+  it('lands on the timeline as a named write: <name>.undo, patches/inverse swapped', () => {
+    const a$ = observable({ v: 1 }) as any
+    const seen: any[] = []
+    const off = addInterceptor({ after: r => seen.push(r) })
+
+    const setV = update('undo/setV', { a: a$ }, (d, v: number) => { d.a.v = v })
+    const undo = setV(42)
+    undo()
+    off()
+
+    expect(seen.map(r => r.name)).toEqual(['undo/setV', 'undo/setV.undo'])
+    expect(seen[1].scope).toEqual(['a'])
+    expect(seen[1].patches).toEqual(seen[0].inverse) // the rollback's forward ops
+    expect(seen[1].inverse).toEqual(seen[0].patches) // …and its redo
+  })
+
+  it('a before-interceptor veto aborts the rollback cleanly and leaves the thunk live', () => {
+    const a$ = observable({ v: 1 }) as any
+    const setV = update('undo/veto', { a: a$ }, (d, v: number) => { d.a.v = v })
+    const undo = setV(2)
+
+    const off = addInterceptor({
+      before: name => { if (name.endsWith('.undo')) throw new Error('vetoed') },
+    })
+    expect(() => undo()).toThrow('vetoed')
+    expect(a$.peek()).toEqual({ v: 2 }) // untouched
+    off()
+
+    undo() // veto never spent the thunk
+    expect(a$.peek()).toEqual({ v: 1 })
+  })
+
+  it('an update that changed nothing returns a silent no-op undo', () => {
+    const a$ = observable({ v: 1 }) as any
+    const seen: any[] = []
+    const noop = update('undo/noop', { a: a$ }, () => {})
+
+    const undo = noop()
+    const off = addInterceptor({ after: r => seen.push(r) })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    undo()
+    off()
+    warn.mockRestore()
+
+    expect(seen).toEqual([]) // no timeline noise
+    expect(a$.peek()).toEqual({ v: 1 })
+  })
+})

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { eventToStream, statusOf } from "concordia";
 import { use$ } from "concordia/react";
 import {
+  donate,
   refetchBooks,
   searchState$,
   searchUi$,
@@ -54,6 +55,18 @@ function SearchStatusLine() {
   );
 }
 
+// The mutation DX: status rides on the function — no statusOf import, no
+// wiring. Donate, watch "donating… → donated ✓", then watch the shelf refetch
+// ITSELF: the mutation's settle invalidated the query; nobody called refetch.
+function DonateButton() {
+  const { pending, success } = use$(donate.status);
+  return (
+    <button onClick={() => donate()} disabled={pending}>
+      {pending ? "donating…" : success ? "donated ✓ — again?" : "donate a book"}
+    </button>
+  );
+}
+
 function BooksPanel() {
   const keepPrevious = use$(searchUi$.keepPrevious);
   const sortBy = use$(searchUi$.sortBy);
@@ -63,7 +76,7 @@ function BooksPanel() {
     <section className="panel">
       <header>
         <h2>Library search</h2>
-        <span className="tag">query · streamSelector · selector</span>
+        <span className="tag">query · mutation · streamSelector · selector</span>
       </header>
       <p className="hint">
         Keyed, cached, stale-while-revalidate. Retype a recent search within 15s
@@ -93,6 +106,7 @@ function BooksPanel() {
           </select>
         </label>
         <button onClick={() => refetchBooks()}>invalidate all</button>
+        <DonateButton />
       </div>
 
       <ul className="books">
@@ -172,7 +186,11 @@ function TodosPanel() {
 
       <div className="row controls">
         <button onClick={() => syncNow()} disabled={sync.pending}>
-          {sync.pending ? "syncing…" : "pull from server"}
+          {sync.pending
+            ? "syncing…"
+            : sync.success
+              ? "synced ✓ — pull again"
+              : "pull from server"}
         </button>
         <button className="ghost" onClick={() => clearCompleted()}>
           clear completed

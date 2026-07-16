@@ -20,9 +20,12 @@ export { streamSelector, type StreamSelectorOptions } from './streamSelector'
 // The query node's value IS the result envelope: { data, pending, stale,
 // error, fetchedAt }. statusOf exists for command events only.
 export { query, invalidate, type QueryOptions, type QueryResult } from './query'
+// EXPERIMENTAL — a server write: an event whose status node rides on the
+// function (m.status ≡ statusOf(m)) and whose settle invalidates queries.
+export { mutation, type Mutation, type MutationOptions } from './mutation'
 export { statusOf } from './status'
 export { type EventStatus } from './events'
-export { update, type UpdateScope } from './update'
+export { update, type UpdateScope, type Undo } from './update'
 export {
   event,
   eventToStream,

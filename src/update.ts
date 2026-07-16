@@ -1,8 +1,14 @@
-import { applyPatches as immerApplyPatches, produceWithPatches } from 'immer'
+import { applyPatches as immerApplyPatches, produceWithPatches, type Patch } from 'immer'
 import { batch } from '@legendapp/state'
 import { applyPatches } from './applyPatches'
 import { currentOrigin } from './context'
 import { runAfter, runBefore } from './interceptors'
+
+/** Rolls back one update invocation by applying its inverse patches — a
+ *  named write (`<name>.undo`) through the normal interceptor pipeline.
+ *  One-shot: replace-inverses would be idempotent, but an insert's inverse
+ *  is a remove, and removing twice eats a neighbor — a spent thunk no-ops. */
+export type Undo = () => void
 
 type AtomMap = Record<string, any>
 
@@ -53,6 +59,31 @@ function currentValue(node$: any): unknown {
   return cache.cachedVersion === cache.version ? cache.value : node$.peek()
 }
 
+/** Apply a patch set to its atoms in one batch, maintaining a plain-data
+ *  shadow so patch application never reads Legend (whose keyed-array reads
+ *  are O(n) after writes). Returns the final shadow — the exact post-write
+ *  plain state, used to re-validate the base cache. */
+function applyPatchSet(
+  writes: AtomMap,
+  base: Record<string, unknown>,
+  patches: readonly Patch[],
+): any {
+  let shadow: any = base
+  batch(() => {
+    for (const patch of patches) {
+      const atomKey = patch.path[0] as string
+      const atom$ = writes[atomKey]
+      applyPatches(
+        atom$,
+        [{ ...patch, path: patch.path.slice(1) }],
+        parentPath => parentPath.reduce((n: any, k) => n?.[k], shadow[atomKey]),
+      )
+      shadow = immerApplyPatches(shadow, [patch])
+    }
+  })
+  return shadow
+}
+
 /**
  * Declare a named, multi-atom transition.
  *   const addItem = update('cart/addItem', { cart: cart$ }, (d, item: Item) => { ... })
@@ -60,17 +91,21 @@ function currentValue(node$: any): unknown {
  * to each atom by their first path segment and applied in one batch (atomic to
  * subscribers). A recipe that throws — or a `before` interceptor veto, or a
  * write into the read scope — is a clean no-op.
+ *
+ * Every invocation returns a one-shot `Undo` thunk over its inverse patches —
+ * ignorable in statement position, and the optimistic-rollback primitive
+ * inside mutation handlers: `const undo = applyToggle(id)` … `undo()`.
  */
 export function update<S extends UpdateScope, A extends unknown[]>(
   name: string,
   scope: S,
   recipe: (draft: any, ...args: A) => void,
-): (...args: A) => void {
+): (...args: A) => Undo {
   const { writes, reads } = splitScope(scope)
   const writeKeys = Object.keys(writes)
   const readKeys = Object.keys(reads)
 
-  return (...args: A) => {
+  return (...args: A): Undo => {
     runBefore(name, args, writeKeys)   // interceptor veto: throw here aborts cleanly
 
     const base: Record<string, unknown> = {}
@@ -91,21 +126,7 @@ export function update<S extends UpdateScope, A extends unknown[]>(
       }
     }
 
-    batch(() => {
-      // shadow: plain-data view of the evolving state, so patch application
-      // never reads Legend (whose keyed-array reads are O(n) after writes)
-      let shadow: any = base
-      for (const patch of patches) {
-        const atomKey = patch.path[0] as string
-        const atom$ = writes[atomKey]
-        applyPatches(
-          atom$,
-          [{ ...patch, path: patch.path.slice(1) }],
-          parentPath => parentPath.reduce((n: any, k) => n?.[k], shadow[atomKey]),
-        )
-        shadow = immerApplyPatches(shadow, [patch])
-      }
-    })
+    applyPatchSet(writes, base, patches)
 
     // after the batch: our own onChange bumps have landed, so storing the
     // Immer next slice with the current version marks the cache valid
@@ -116,5 +137,36 @@ export function update<S extends UpdateScope, A extends unknown[]>(
     }
 
     runAfter({ name, args, scope: writeKeys, patches, inverse, origin: currentOrigin() })
+
+    // the invocation's rollback: apply the inverse against CURRENT state, so
+    // later writes to OTHER leaves survive (last-writer-wins per leaf — the
+    // property snapshot-restore rollback can't offer)
+    let spent = false
+    return () => {
+      if (spent) {
+        console.warn(`[concordia] undo for update '${name}' already applied — ignored`)
+        return
+      }
+      if (inverse.length === 0) {
+        spent = true // recipe changed nothing; keep the timeline free of noise
+        return
+      }
+      const undoName = `${name}.undo`
+      runBefore(undoName, args, writeKeys) // a veto is a clean no-op; thunk stays live
+      spent = true
+
+      const undoBase: Record<string, unknown> = {}
+      for (const k of writeKeys) undoBase[k] = currentValue(writes[k])
+      const shadow = applyPatchSet(writes, undoBase, inverse)
+
+      for (const k of writeKeys) {
+        const cache = cacheFor(writes[k])
+        cache.value = shadow[k]
+        cache.cachedVersion = cache.version
+      }
+
+      // patches/inverse swap roles: the undo's own inverse is the redo
+      runAfter({ name: undoName, args, scope: writeKeys, patches: inverse, inverse: patches, origin: currentOrigin() })
+    }
   }
 }

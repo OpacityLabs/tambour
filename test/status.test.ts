@@ -18,7 +18,7 @@ describe('statusOf(event)', () => {
     const sync = event('t/sync', () => gate.promise, { concurrency: 'exhaust' })
 
     const status$ = statusOf(sync)
-    expect(status$.get()).toEqual({ pending: false, inFlight: 0, error: undefined })
+    expect(status$.get()).toEqual({ pending: false, inFlight: 0, error: undefined, success: false })
 
     const p1 = sync()
     expect(status$.get().pending).toBe(true)
@@ -31,7 +31,7 @@ describe('statusOf(event)', () => {
     gate.resolve('ok')
     await p1
     await sleep(1)
-    expect(status$.get()).toEqual({ pending: false, inFlight: 0, error: undefined })
+    expect(status$.get()).toEqual({ pending: false, inFlight: 0, error: undefined, success: true })
   })
 
   it('records rejections, clears the error on the next fire', async () => {
@@ -50,7 +50,7 @@ describe('statusOf(event)', () => {
     expect(statusOf(doWork).get().error).toBeUndefined() // cleared at fire
     await p
     await sleep(1)
-    expect(statusOf(doWork).get()).toEqual({ pending: false, inFlight: 0, error: undefined })
+    expect(statusOf(doWork).get()).toEqual({ pending: false, inFlight: 0, error: undefined, success: true })
   })
 
   it('a switch supersession is not recorded as an error', async () => {
@@ -78,6 +78,73 @@ describe('statusOf(event)', () => {
     done[1]!.resolve('b-data')
     await sleep(1)
     expect(statusOf(load).get().pending).toBe(false)
+  })
+})
+
+describe('statusOf(event).success — settle discrimination for mutations', () => {
+  it('distinguishes "never fired" from "settled successfully"', async () => {
+    const save = event('t/save', async () => 'ok')
+    expect(statusOf(save).get().success).toBe(false) // idle, not "succeeded"
+
+    await save()
+    await sleep(1)
+    expect(statusOf(save).get().success).toBe(true)
+  })
+
+  it('a re-fire clears success while pending — spinner, not a stale checkmark', async () => {
+    const gate = deferred<string>()
+    let first = true
+    const save = event('t/resave', () => {
+      if (first) { first = false; return Promise.resolve('ok') }
+      return gate.promise
+    })
+
+    await save()
+    await sleep(1)
+    expect(statusOf(save).get().success).toBe(true)
+
+    const p2 = save()
+    expect(statusOf(save).get().success).toBe(false) // cleared at fire
+    expect(statusOf(save).get().pending).toBe(true)
+
+    gate.resolve('ok again')
+    await p2
+    await sleep(1)
+    expect(statusOf(save).get().success).toBe(true)
+  })
+
+  it('an error settle records the error and leaves success false', async () => {
+    const save = event('t/failsave', async () => { throw new Error('boom') })
+    await save().catch(() => {})
+    await sleep(1)
+    const s = statusOf(save).get()
+    expect(s.success).toBe(false)
+    expect((s.error as Error).message).toBe('boom')
+  })
+
+  it('a superseded run never claims success, even if its handler completes anyway', async () => {
+    const done: ReturnType<typeof deferred<string>>[] = []
+    const load = event(
+      't/switchsave',
+      (_id: string, _signal: AbortSignal) => {
+        const d = deferred<string>()
+        done.push(d)
+        return d.promise // deliberately ignores the abort signal
+      },
+      { concurrency: 'switch' },
+    )
+
+    load('a')
+    load('b') // supersedes 'a'
+    done[0]!.resolve('a-finished-anyway')
+    await sleep(1)
+    const mid = statusOf(load).get()
+    expect(mid.success).toBe(false) // only the surviving run may speak
+    expect(mid.pending).toBe(true)
+
+    done[1]!.resolve('b-data')
+    await sleep(1)
+    expect(statusOf(load).get()).toEqual({ pending: false, inFlight: 0, error: undefined, success: true })
   })
 })
 

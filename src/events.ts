@@ -13,6 +13,11 @@ export interface EventStatus {
   /** The last rejection; cleared on the next fire. Supersessions from
    *  `concurrency: 'switch'` do not count as errors. */
   error: unknown
+  /** The last winning settle completed without error. False until the first
+   *  fire (distinguishes "settled successfully" from "never fired") and
+   *  cleared on each fire — a re-submit shows a spinner, not a stale
+   *  checkmark. Superseded runs never set it, even if they complete. */
+  success: boolean
 }
 
 const EVENT_STATUS = new WeakMap<object, any>()
@@ -91,17 +96,18 @@ export function event(
   let inFlight: Promise<unknown> | null = null           // exhaust
   let controller: AbortController | null = null          // switch
 
-  const status$ = observable<EventStatus>({ pending: false, inFlight: 0, error: undefined })
+  const status$ = observable<EventStatus>({
+    pending: false, inFlight: 0, error: undefined, success: false,
+  })
 
   const settle = (superseded: boolean, error?: unknown): void => {
     batch(() => {
       const n = Math.max(0, status$.inFlight.peek() - 1)
-      status$.assign(
-        // a switch-abort is a supersession, not a failure — don't record it
-        error !== undefined && !superseded
-          ? { pending: n > 0, inFlight: n, error }
-          : { pending: n > 0, inFlight: n },
-      )
+      // a supersession is not an outcome — only the surviving run may write
+      // error/success, even if the superseded handler ran to completion
+      if (superseded) status$.assign({ pending: n > 0, inFlight: n })
+      else if (error !== undefined) status$.assign({ pending: n > 0, inFlight: n, error, success: false })
+      else status$.assign({ pending: n > 0, inFlight: n, success: true })
     })
   }
 
@@ -119,7 +125,9 @@ export function event(
     const myController = controller
 
     batch(() => {
-      status$.assign({ pending: true, inFlight: status$.inFlight.peek() + 1, error: undefined })
+      status$.assign({
+        pending: true, inFlight: status$.inFlight.peek() + 1, error: undefined, success: false,
+      })
     })
 
     const promise = (async () => {
@@ -128,7 +136,7 @@ export function event(
     })()
 
     promise.then(
-      () => settle(false),
+      () => settle(myController?.signal.aborted ?? false),
       error => settle(myController?.signal.aborted ?? false, error),
     )
 

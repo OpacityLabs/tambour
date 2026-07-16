@@ -268,12 +268,87 @@ invalidate(libraryBooks)                                // or invalidate(library
   Re-calling `family(args)` per render is the intended pattern (~µs hash →
   same node → stable use$ subscription); hot paths hoist the call into a
   selector.
-- **Open items before freeze**: mutation primitive (command + metadata —
-  TanStack-mutation-shaped but lighter; next design dialog), retry/timeout
-  options on `event`, `refetchOn: ['focus','reconnect']` via an RN adapter
-  (AppState/NetInfo → streamEvents), devtools entries for query lifecycle,
-  and the streamSelector re-activation gap (mitigated for atomToStream-fed
-  pipelines, which re-prime on subscribe — verified in `test/chain.test.ts`).
+- **Open items before freeze**: retry/timeout options on `event` (shared
+  vocabulary with query; zero-retry default — see Mutations), `refetchOn:
+  ['focus','reconnect']` via an RN adapter (AppState/NetInfo → streamEvents),
+  devtools entries for query lifecycle, and the streamSelector re-activation
+  gap (mitigated for atomToStream-fed pipelines, which re-prime on
+  subscribe — verified in `test/chain.test.ts`).
+
+## Mutations — EXPERIMENTAL (API not frozen)
+
+Decided in the mutation design dialog (2026-07-16). **No parallel command
+layer**: a mutation IS an `event` — same timeline entry, `statusOf`,
+`eventToStream` tap, concurrency policies, and every future event option
+(retry/timeout) for free. `mutation()` is the batteries-included sugar so
+status/completion/error are just there, and so mutation-specific behavior
+has a non-breaking home if it ever earns more:
+
+```ts
+export const renameTodo = mutation('todos/rename',
+  async (id: string, title: string) => { await api.renameTodo(id, title) },
+  { invalidates: ([id]) => [todoList, todoDetail(id)] })
+
+const { pending, success, error } = use$(renameTodo.status)  // carried metadata
+await renameTodo('t1', 'buy milk')                           // plain typed async
+```
+
+- **Status is the event's status node, carried on the function.**
+  `m.status` ≡ `statusOf(m)` (same node, asserted by identity in tests).
+  `EventStatus` gained `success` for mutation-grade DX: false until the
+  first fire (idle ≠ succeeded), cleared on each fire (a re-submit shows a
+  spinner, not a stale checkmark), set only by a *winning* clean settle. A
+  switch-superseded run touches neither `error` nor `success`, even if its
+  handler completes anyway. Fire and settle each write all fields in one
+  batch — a torn frame (`success && pending`) is structurally impossible
+  (render-proof in `test/status-granularity.test.tsx`).
+- **No `data` field on status.** TanStack puts the result on the mutation
+  because it has no state layer to put it in; concordia does — results land
+  in atoms via updates, or belong to the awaiting caller's promise. A
+  per-declaration `data` slot would also be wrong under overlapping calls.
+- **No concurrency default.** `'exhaust'` would coalesce a re-fire with
+  DIFFERENT args into the first run's promise — silent arg loss for
+  per-entity mutations (`deleteTodo(b)` swallowed by in-flight
+  `deleteTodo(a)`). Plain by default; opt into `'exhaust'` per
+  submit-shaped mutation.
+- **`invalidates` wires settle → staleness**, three forms:
+  `[family]` (every cached key), `[family(key)]` (one static key), and
+  `([id]) => [todoList, todoDetail(id)]` — the callback receives the call's
+  argument tuple (never the switch AbortSignal); destructure what you need.
+  A tuple parameter, not spread: a spread callback using only a prefix of
+  the args trips TS's rest-tuple variance check, and a prefix-signature
+  union breaks contextual typing (probed; see `test/mutation.typecheck.ts`).
+  Runs on success AND error settles (a failed request may have landed
+  server-side; TanStack's onSettled guidance) — never for superseded runs.
+  Result-dependent targets stay in the handler, which holds the result.
+  The function form answers *which keys*, never *whether* — conditional
+  invalidation is control flow and lives in the handler.
+- **No debounce/throttle options — the boundary is semantic.** An event
+  call returns a promise; exhaust and switch have truthful answers for the
+  caller (the shared in-flight promise; an abort). Debounce means "maybe
+  later, maybe never" — no honest promise exists. Temporal shaping is
+  stream semantics: fire a `streamEvent` per keystroke, `debounceTime` in
+  the pipeline, call the mutation from the subscription (rule 5's division
+  of labor). Exhaust already covers the common throttle want.
+- **Optimistic updates are a recipe, not an API.** TanStack needs
+  onMutate/context/onError because the wrapper owns the control flow;
+  here the handler owns it, so the lifecycle is try/catch/finally:
+
+  ```ts
+  export const toggleTodo = mutation('todos/toggle', async (id: string) => {
+    const undo = applyToggle(id)          // update() — optimistic, instant
+    try { await api.toggleTodo(id) }
+    catch (e) { undo(); throw e }         // rollback = apply the inverse
+  }, { invalidates: ([id]) => [todoDetail(id)] })
+  ```
+
+  Powered by `update()` invocations returning a one-shot `Undo` thunk (see
+  Updates). End-to-end test (instant flip → server 500 → exact rollback →
+  truthful status) in `test/mutation.test.ts`.
+- **The horizon that would earn more machinery**: offline mutation queues
+  (TanStack's paused mutations) require *reified*, serializable mutations —
+  a queue built on event + persisted atoms, behind this same `mutation()`
+  name, if a real app ever needs it. Not before.
 
 ---
 
@@ -331,6 +406,18 @@ Known implementation requirements (validated in Phase 0):
   path; `remove` must splice. Verify Legend's `.delete()` semantics on array elements.
 - **All-or-nothing for free**: patches are computed before anything applies, so a
   recipe that throws is a clean no-op. Updates are more transactional than they look.
+- **Every invocation returns a one-shot `Undo` thunk** (added in the mutation
+  dialog, 2026-07-16) — a closure over the invocation's inverse patches,
+  ignorable in statement position. Calling it applies the inverse against
+  *current* state as a named write (`<name>.undo`) through the normal
+  batch + interceptor pipeline (patches/inverse swap roles — the undo's
+  inverse is the redo), so rollbacks are on the timeline and causally
+  attributed when called inside an event handler. Surgical by construction:
+  later writes to *other* leaves survive a rollback (leaf-level
+  last-writer-wins — the property snapshot-restore can't offer). One-shot
+  because an insert's inverse is a remove, and removing twice eats a
+  neighbor; a spent thunk warns and no-ops. This is the optimistic-update
+  primitive (see Mutations).
 - **Hot-path escape hatch**: Immer proxying is a per-frame tax at 60fps.
   Scoped updates (`update(name, { node: cart$.items[3] }, recipe)`) proxy only the
   subtree; `updateDirect` (raw batched sets, still named and logged) exists for
@@ -344,7 +431,9 @@ Known implementation requirements (validated in Phase 0):
   delivers inverse patches on every update, so an app that needs undo hand-rolls
   it in ~10 lines — push `{name, inverse}` in `after`, apply popped inverses to
   undo — and owns the UX decisions (grouping, scoping, depth) that no runtime can
-  guess. A documented recipe, not a primitive.
+  guess. A documented recipe, not a primitive. (Invocation-scoped rollback is
+  different: that's the returned `Undo` thunk above — the caller undoing its
+  own write, not an app-wide stack.)
 
 ### Interceptors (middleware, minus the ceremony)
 
