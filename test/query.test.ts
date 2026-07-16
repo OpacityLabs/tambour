@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { observable } from '@legendapp/state'
 import { filter, map } from 'rxjs/operators'
-import { query, invalidate, replaceEqualDeep } from '../src/query'
+import { query, invalidate, replaceEqualDeep, stableArgsKey } from '../src/query'
 import { selector } from '../src/selector'
 import { streamSelector } from '../src/streamSelector'
 import { atomToStream } from '../src/bridges'
@@ -199,6 +199,46 @@ describe('query: invalidation', () => {
     expect(a.get().data).toBe('a2')
     expect(b.get().data).toBe('b2')
     da(); db()
+  })
+})
+
+describe('query: key equality', () => {
+  it('object args dedupe regardless of property order — same node, one fetch', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('keys', fetcher, { staleTime: 60_000, default: 0 })
+
+    const a = q({ page: 1, filter: 'sci-fi', sort: { by: 'date', dir: 'asc' } })
+    const b = q({ sort: { dir: 'asc', by: 'date' }, filter: 'sci-fi', page: 1 })
+    expect(a).toBe(b) // reordered keys, nested included → the SAME cache entry
+
+    const d = (a as any).onChange(() => {})
+    ;(a as any).get()
+    await tick()
+    expect(calls.length).toBe(1) // and therefore one fetch
+    d()
+  })
+
+  it('arrays keep their order; primitives keep their type', () => {
+    expect(stableArgsKey('t', [[1, 2]])).not.toBe(stableArgsKey('t', [[2, 1]]))
+    expect(stableArgsKey('t', [1])).not.toBe(stableArgsKey('t', ['1']))
+  })
+
+  it('documents the accepted JSON equivalences', () => {
+    // undefined object values hash like absent keys; undefined in an array
+    // position hashes like null — both mean "no value" (TanStack-compatible)
+    expect(stableArgsKey('t', [{ a: undefined }])).toBe(stableArgsKey('t', [{}]))
+    expect(stableArgsKey('t', [undefined])).toBe(stableArgsKey('t', [null]))
+  })
+
+  it('rejects non-plain-data args loudly, naming the query and the path', () => {
+    const q = query('lib/books', async (_arg: unknown) => 0)
+    expect(() => q(new Map())).toThrow(/query 'lib\/books'.*args\[0\].*Map/)
+    expect(() => q(new Date())).toThrow(/args\[0\].*Date.*toISOString/)
+    expect(() => q({ filter: { since: new Date() } })).toThrow(/args\[0\]\.filter\.since/)
+    expect(() => q([() => 1])).toThrow(/args\[0\]\[0\].*function/)
+    expect(() => q(NaN)).toThrow(/args\[0\].*NaN/)
+    class Filter {}
+    expect(() => q(new Filter())).toThrow(/args\[0\].*Filter/)
   })
 })
 

@@ -102,7 +102,7 @@ export function query<Args extends unknown[], T>(
   const cache = new Map<string, Entry>()
 
   const family = (...args: Args): ReadonlyNode<QueryResult<T | undefined>> => {
-    const key = JSON.stringify(args) // spike keying; structural-key design is a tracked open item
+    const key = stableArgsKey(name, args)
     const hit = cache.get(key)
     if (hit) return hit.node$
 
@@ -231,6 +231,67 @@ export function invalidate(target: object): void {
     entry.store$.stale.set(true)
     if (entry.active && !entry.inFlight) entry.fetch()
   }
+}
+
+// ---- key hashing ------------------------------------------------------------
+
+/**
+ * Stable, order-insensitive cache key for query args. Two rules:
+ *
+ * 1. Plain objects hash with SORTED keys, so `{ page: 1, filter: 'a' }` and
+ *    `{ filter: 'a', page: 1 }` are the same entry — property order can never
+ *    silently split the cache (arrays keep their order; order means something
+ *    there).
+ * 2. Anything that would hash ambiguously THROWS, naming the query and the
+ *    path. Every Map/Set used to stringify to '{}' — all of them colliding on
+ *    one cache entry, invisibly. The contract is: query args are plain data.
+ *
+ * Accepted JSON equivalences (deliberate, TanStack-compatible):
+ * `{ a: undefined }` hashes like `{}`, and `undefined` in an array position
+ * hashes like `null` — both mean "no value" at a call site.
+ */
+export function stableArgsKey(name: string, args: unknown[]): string {
+  for (let i = 0; i < args.length; i++) assertPlainData(args[i], `args[${i}]`, name)
+  return JSON.stringify(args, (_key, value) =>
+    isPlainObject(value)
+      ? Object.keys(value)
+          .sort()
+          .reduce<Record<string, unknown>>((sorted, k) => {
+            sorted[k] = value[k]
+            return sorted
+          }, {})
+      : value,
+  )
+}
+
+function assertPlainData(value: unknown, path: string, name: string): void {
+  if (value === null || value === undefined) return
+  const t = typeof value
+  if (t === 'string' || t === 'boolean') return
+  if (t === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new Error(
+        `[concordia] query '${name}': argument at ${path} is ${String(value)}, which hashes ` +
+          `ambiguously (JSON turns it into null). Use a finite number.`,
+      )
+    }
+    return
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) assertPlainData(value[i], `${path}[${i}]`, name)
+    return
+  }
+  if (isPlainObject(value)) {
+    for (const k of Object.keys(value)) assertPlainData(value[k], `${path}.${k}`, name)
+    return
+  }
+  const kind =
+    t === 'object' ? ((value as object).constructor?.name ?? 'object') : t
+  throw new Error(
+    `[concordia] query '${name}': argument at ${path} is not plain data (got ${kind}). ` +
+      `Query args must be strings, finite numbers, booleans, null, plain objects, or ` +
+      `arrays — convert at the call site (e.g. a Date becomes date.toISOString()).`,
+  )
 }
 
 // ---- structural sharing ----------------------------------------------------

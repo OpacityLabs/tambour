@@ -258,12 +258,22 @@ invalidate(libraryBooks)                                // or invalidate(library
   writes (hydration, stream emissions, query fulfillment) are system-named.
   Query fulfillment is the same write class streamSelector emissions already
   were — every state change still has a name on the timeline.
-- **Open items before freeze**: key equality (spike uses `JSON.stringify(args)`
-  — property-order sensitive), `refetchOn: ['focus','reconnect']` via an RN
-  adapter (AppState/NetInfo → streamEvents), retry/timeout options, devtools
-  entries for query lifecycle, and the streamSelector re-activation gap
-  (mitigated for atomToStream-fed pipelines, which re-prime on subscribe —
-  verified in `test/chain.test.ts`).
+- **Keys are stable hashes of plain-data args** (decided 2026-07-16): the
+  fetcher's signature IS the cache key — no separate queryKey artifact to
+  drift out of sync with the fetch. Plain objects hash with sorted keys
+  (property order can never split the cache); arrays keep their order;
+  anything ambiguous (Date, Map/Set, functions, class instances, NaN) throws
+  at the call site naming the query and the exact path. Accepted JSON
+  equivalences: `{ a: undefined }` ≡ `{}`, array `undefined` ≡ `null`.
+  Re-calling `family(args)` per render is the intended pattern (~µs hash →
+  same node → stable use$ subscription); hot paths hoist the call into a
+  selector.
+- **Open items before freeze**: mutation primitive (command + metadata —
+  TanStack-mutation-shaped but lighter; next design dialog), retry/timeout
+  options on `event`, `refetchOn: ['focus','reconnect']` via an RN adapter
+  (AppState/NetInfo → streamEvents), devtools entries for query lifecycle,
+  and the streamSelector re-activation gap (mitigated for atomToStream-fed
+  pipelines, which re-prime on subscribe — verified in `test/chain.test.ts`).
 
 ---
 
