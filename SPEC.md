@@ -407,6 +407,21 @@ Known implementation requirements (validated in Phase 0):
 - **Array patches need dedicated handling.** Immer's `add` on an array index means
   *insert* (splice), not overwrite; truncation arrives as a `replace` on the `length`
   path; `remove` must splice. Verify Legend's `.delete()` semantics on array elements.
+- **Structural array ops must replace the array (the identity promise,
+  2026-07-20).** Identity-keyed React consumers (`useMemo` deps, `React.memo`
+  props) assume Immer semantics: a changed array is a NEW array. The original
+  append fast-path (Legend in-place `push`) broke that for additions only —
+  removes replaced — so a `useMemo` over a raw array node went stale in one
+  direction and healed in the other (the shine favorites bug: re-render fired,
+  memo served stale output). Appends now build a fresh array like every other
+  structural op; `atom(..., { fastAppends: true })` restores the in-place push
+  per atom for measured hot paths (~100x on large keyed arrays), with the
+  documented contract that fast atoms are consumed via selectors or inline,
+  never identity-keyed memos. Boundary that stays: LEAF edits inside an item
+  keep the containing array's identity — propagating identity upward would
+  replace every ancestor and destroy targeted re-renders. Identity tracks
+  structure, not content: memo on identity for add/remove, derive through a
+  selector to react to item edits.
 - **All-or-nothing for free**: patches are computed before anything applies, so a
   recipe that throws is a clean no-op. Updates are more transactional than they look.
 - **Every invocation returns a one-shot `Undo` thunk** (added in the mutation
@@ -678,7 +693,9 @@ slice with persistence + async pressure-tests the APIs before they freeze.
   by a version counter any foreign write bumps) and the **shadow resolver**
   (patch application reads a plain-data shadow, never Legend). Node result:
   1k-item push went 510 µs → 30 µs. Scoped updates remain the belt-and-braces
-  for per-frame paths.
+  for per-frame paths. Appends default to identity-fresh `set` since 2026-07-20
+  (the identity promise, see Mechanics) — the in-place push survives as the
+  per-atom `fastAppends` opt-in for the large-keyed-array case.
 - **Rx maximalism** — mitigated by rule 6, the lint rule, and `streamSelector` being
   the only sanctioned Rx→React path.
 - **Convention decay** — the write-discipline and naming rules hold only if the type

@@ -74,3 +74,77 @@ describe('freeze safety', () => {
     expect(obs$.kept.deep.peek()).toBe(2)
   })
 })
+
+describe('applyPatches: array identity (the Immer promise)', () => {
+  // Identity-keyed React consumers (useMemo deps, React.memo props) rely on a
+  // changed array being a NEW array. Every structural op must deliver that —
+  // the shine favorites bug came from appends mutating in place while removes
+  // replaced, so staleness depended on the direction of the last change.
+  function applied<T extends object>(base: T, recipe: (d: T) => void, options?: { fastAppends?: boolean }) {
+    const obs$ = observable(structuredClone(base)) as any
+    const before = obs$.items.peek()
+    const [, patches] = produceWithPatches(structuredClone(base), recipe as any)
+    applyPatches(obs$, patches, undefined, options)
+    return { before, after: obs$.items.peek() }
+  }
+
+  it('append produces a new array', () => {
+    const { before, after } = applied({ items: [1, 2] }, d => { d.items.push(3) })
+    expect(after).not.toBe(before)
+    expect(after).toEqual([1, 2, 3])
+  })
+
+  it('append into an empty array produces a new array', () => {
+    const { before, after } = applied({ items: [] as number[] }, d => { d.items.push(1) })
+    expect(after).not.toBe(before)
+    expect(after).toEqual([1])
+  })
+
+  it('remove produces a new array (unchanged behavior, pinned)', () => {
+    const { before, after } = applied({ items: [1, 2, 3] }, d => { d.items.splice(1, 1) })
+    expect(after).not.toBe(before)
+    expect(after).toEqual([1, 3])
+  })
+
+  it('fastAppends option: append is in place, identity kept', () => {
+    const { before, after } = applied(
+      { items: [1, 2] },
+      d => { d.items.push(3) },
+      { fastAppends: true },
+    )
+    expect(after).toBe(before)
+    expect(after).toEqual([1, 2, 3])
+  })
+
+  it('fastAppends: middle inserts also stay in place (Immer emits growth as replaces + a trailing add)', () => {
+    const { before, after } = applied(
+      { items: [1, 3] },
+      d => { d.items.splice(1, 0, 2) },
+      { fastAppends: true },
+    )
+    expect(after).toBe(before)
+    expect(after).toEqual([1, 2, 3])
+  })
+
+  it('fastAppends: removes still produce a new identity', () => {
+    const { before, after } = applied(
+      { items: [1, 2, 3] },
+      d => { d.items.splice(1, 1) },
+      { fastAppends: true },
+    )
+    expect(after).not.toBe(before)
+    expect(after).toEqual([1, 3])
+  })
+
+  it('leaf edit inside an item keeps the array identity (inherent, documented)', () => {
+    // Not a bug to "fix": propagating fresh identity upward on leaf writes
+    // would replace every ancestor and destroy targeted re-renders. Readers
+    // that must react to item edits derive through selectors.
+    const { before, after } = applied(
+      { items: [{ id: 'a', qty: 1 }] },
+      d => { d.items[0]!.qty = 2 },
+    )
+    expect(after).toBe(before)
+    expect(after).toEqual([{ id: 'a', qty: 2 }])
+  })
+})

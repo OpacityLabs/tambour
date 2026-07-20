@@ -4,6 +4,17 @@ import type { Atom, ReadonlyNode } from './types'
 
 export interface AtomOptions {
   persist?: PersistConfig
+  /** Array GROWTH inside `update()` uses Legend's in-place `push` instead of
+   *  replacing the array (~100x cheaper on large keyed arrays, and the only
+   *  reason to reach for this). Covers plain appends AND middle inserts —
+   *  Immer emits growth as replaces plus a trailing add. The cost: arrays
+   *  KEEP THEIR IDENTITY while growing (removes still replace), so
+   *  identity-keyed React consumers (useMemo deps, React.memo props) will
+   *  not see additions — readers of a fast atom must derive through
+   *  selectors or inline. Applies when an update's write scope names this
+   *  atom's root node; child-node (scoped) writes always take safe appends.
+   *  Reserve for measured hot paths. */
+  fastAppends?: boolean
 }
 
 interface RegistryEntry {
@@ -11,6 +22,7 @@ interface RegistryEntry {
   node$: any
   initial: unknown
   persist?: PersistHandle
+  fastAppends?: boolean
 }
 
 const registry = new Map<string, RegistryEntry>()
@@ -32,6 +44,7 @@ export function atom<T>(name: string, initial: T, options?: AtomOptions): Atom<T
   }
   const node$ = observable(structuredClone(initial))
   const entry: RegistryEntry = { name, node$, initial: structuredClone(initial) }
+  if (options?.fastAppends) entry.fastAppends = true
   if (options?.persist) {
     entry.persist = persistAtom(node$, name, options.persist)
   }
@@ -62,6 +75,14 @@ export function hydrated(): Promise<void> {
 /** Internal/devtools: the writable node for a registered atom. */
 export function getAtomNode(name: string): unknown {
   return registry.get(name)?.node$
+}
+
+/** Internal: whether a write-scope node is an atom registered with
+ *  `fastAppends`. Child-node scopes resolve false by design — scoped updates
+ *  can't be traced to their owning atom without reaching into Legend
+ *  internals, so they take the safe (identity-fresh) append path. */
+export function fastAppendsFor(node$: object): boolean {
+  return byNode.get(node$)?.fastAppends === true
 }
 
 export function atomNames(): string[] {

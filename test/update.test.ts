@@ -234,3 +234,63 @@ describe('update: the returned Undo thunk', () => {
     expect(a$.peek()).toEqual({ v: 1 })
   })
 })
+
+describe('update: fastAppends atom option', () => {
+  // Registered atoms opt into in-place appends per atom; everything else —
+  // default atoms, raw observables, child-node (scoped) write scopes — gets
+  // the safe path: structural changes always produce a new array identity.
+  const freshAtom = async (options?: { fastAppends?: boolean }) => {
+    const { atom, clearRegistry } = await import('../src/atom')
+    clearRegistry()
+    return atom('list', { items: [1, 2] as number[], meta: { touched: 0 } }, options) as any
+  }
+  const append = (list$: any) =>
+    update('list/append', { l: list$ }, (d, n: number) => { d.l.items.push(n) })
+
+  it('default atom: append produces a new array identity', async () => {
+    const list$ = await freshAtom()
+    const before = list$.items.peek()
+    append(list$)(3)
+    expect(list$.items.peek()).not.toBe(before)
+    expect(list$.items.peek()).toEqual([1, 2, 3])
+  })
+
+  it('fastAppends atom: append is in place, identity kept', async () => {
+    const list$ = await freshAtom({ fastAppends: true })
+    const before = list$.items.peek()
+    append(list$)(3)
+    expect(list$.items.peek()).toBe(before)
+    expect(list$.items.peek()).toEqual([1, 2, 3])
+  })
+
+  it('fastAppends atom: removes still produce a new identity', async () => {
+    const list$ = await freshAtom({ fastAppends: true })
+    const remove = update('list/remove', { l: list$ }, (d, n: number) => {
+      const i = d.l.items.indexOf(n)
+      if (i !== -1) d.l.items.splice(i, 1)
+    })
+    const before = list$.items.peek()
+    remove(1)
+    expect(list$.items.peek()).not.toBe(before)
+    expect(list$.items.peek()).toEqual([2])
+  })
+
+  it('child-node (scoped) write scope on a fast atom takes the safe append', async () => {
+    const list$ = await freshAtom({ fastAppends: true })
+    const scopedAppend = update('list/scopedAppend', { items: list$.items }, (d, n: number) => {
+      d.items.push(n)
+    })
+    const before = list$.items.peek()
+    scopedAppend(3)
+    expect(list$.items.peek()).not.toBe(before)
+    expect(list$.items.peek()).toEqual([1, 2, 3])
+  })
+
+  it('unregistered raw observables take the safe append', () => {
+    const raw$ = observable({ items: [1] as number[] }) as any
+    const before = raw$.items.peek()
+    update('raw/append', { r: raw$ }, (d, n: number) => { d.r.items.push(n) })(2)
+    expect(raw$.items.peek()).not.toBe(before)
+    expect(raw$.items.peek()).toEqual([1, 2])
+  })
+})

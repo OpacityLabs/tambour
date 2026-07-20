@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { StrictMode, startTransition, useState } from 'react'
+import { StrictMode, startTransition, useMemo, useState } from 'react'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Subject } from 'rxjs'
@@ -176,5 +176,42 @@ describe('use$: selectorFamily lifecycle under React', () => {
 
     act(() => setQty(0, 7))
     await waitFor(() => expect(screen.getByTestId('fam').textContent).toBe('7'))
+  })
+})
+
+describe('use$: identity-keyed memoization sees structural array changes', () => {
+  // Regression for the shine favorites bug: appends used to mutate the raw
+  // array in place, so a useMemo keyed on a use$-returned array never
+  // recomputed — the component re-rendered but showed the memo's stale
+  // output. Structural ops now always produce a new array identity.
+  it('useMemo keyed on a use$ array recomputes after successive appends', () => {
+    const favorites$ = atom('favorites', { ids: [] as string[] })
+    const toggle = update('favorites/toggle', { f: favorites$ }, (d, id: string) => {
+      const i = d.f.ids.indexOf(id)
+      if (i === -1) d.f.ids.push(id)
+      else d.f.ids.splice(i, 1)
+    })
+    const ALL = [
+      { id: 'w1', name: 'Push Day' },
+      { id: 'w2', name: 'Pull Day' },
+    ]
+
+    function Favorites() {
+      const ids = use$((favorites$ as any).ids) as string[]
+      const picked = useMemo(() => ALL.filter(w => ids.includes(w.id)), [ids])
+      return <span data-testid="favs">{picked.map(w => w.name).join(',')}</span>
+    }
+
+    render(<Favorites />)
+    expect(screen.getByTestId('favs').textContent).toBe('')
+
+    act(() => { toggle('w1') })
+    expect(screen.getByTestId('favs').textContent).toBe('Push Day')
+
+    act(() => { toggle('w2') })
+    expect(screen.getByTestId('favs').textContent).toBe('Push Day,Pull Day')
+
+    act(() => { toggle('w1') })
+    expect(screen.getByTestId('favs').textContent).toBe('Pull Day')
   })
 })

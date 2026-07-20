@@ -19,6 +19,14 @@ export function nodeAt(root$: any, path: readonly PathKey[]): any {
  *  structural write is O(n)). Must reflect all previously applied patches. */
 export type PathResolver = (path: readonly PathKey[]) => unknown
 
+export interface ApplyPatchesOptions {
+  /** Appends go through Legend's in-place `push` instead of replacing the
+   *  array. Skips the O(n) keyed-array diff, but the array KEEPS ITS IDENTITY
+   *  across appends — identity-keyed consumers (useMemo deps, React.memo
+   *  props) will not see them. See `AtomOptions.fastAppends`. */
+  fastAppends?: boolean
+}
+
 /**
  * Apply Immer patches to a Legend observable via targeted per-node operations.
  * Handles the array cases Immer emits (and canonical JSON-patch forms):
@@ -29,10 +37,18 @@ export type PathResolver = (path: readonly PathKey[]) => unknown
  *   - add/replace on an object key     -> set
  *   - remove on an object key          -> delete
  *   - empty path                       -> whole-node set
+ * Every structural array op (add/remove) replaces the array, so a changed
+ * array always has a new identity — the Immer promise identity-keyed React
+ * consumers rely on. `fastAppends` opts an append out of that promise.
  * Without `resolve`, current values are read via peek() (fine for one-off
  * callers like the undo recipe; update() always passes a resolver).
  */
-export function applyPatches(root$: any, patches: readonly Patch[], resolve?: PathResolver): void {
+export function applyPatches(
+  root$: any,
+  patches: readonly Patch[],
+  resolve?: PathResolver,
+  options?: ApplyPatchesOptions,
+): void {
   for (const patch of patches) {
     const { op, path } = patch
 
@@ -56,11 +72,13 @@ export function applyPatches(root$: any, patches: readonly Patch[], resolve?: Pa
       }
       const index = key as number
       if (op === 'add') {
-        if (index >= parentValue.length) {
-          // append — Legend's native push avoids re-diffing the whole array
+        if (options?.fastAppends && index >= parentValue.length) {
+          // opt-in append fast path — in place, keeps the array's identity
           parent$.push(patch.value)
         } else {
           // JSON-patch add on an array index means INSERT, not overwrite
+          // (append when index === length); replacing the array gives the
+          // structural change a fresh identity
           const next = parentValue.slice()
           next.splice(index, 0, patch.value)
           parent$.set(next)

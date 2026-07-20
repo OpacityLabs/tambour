@@ -1,6 +1,7 @@
 import { applyPatches as immerApplyPatches, produceWithPatches, type Patch } from 'immer'
 import { batch } from '@legendapp/state'
 import { applyPatches } from './applyPatches'
+import { fastAppendsFor } from './atom'
 import { currentOrigin } from './context'
 import { runAfter, runBefore } from './interceptors'
 
@@ -77,6 +78,7 @@ function applyPatchSet(
         atom$,
         [{ ...patch, path: patch.path.slice(1) }],
         parentPath => parentPath.reduce((n: any, k) => n?.[k], shadow[atomKey]),
+        fastAppendsFor(atom$) ? { fastAppends: true } : undefined,
       )
       shadow = immerApplyPatches(shadow, [patch])
     }
