@@ -27,7 +27,7 @@ export function use$<T>(node: ReadonlyNodeBase<T>): T {
  * it). Apps with the compiler enabled MUST use this name (or alias their
  * import to any /^use[A-Z0-9]/ name); `use$` remains for everyone else.
  */
-export const useNode = use$
+export const useValue = use$
 
 /** Re-exports from Legend's React bindings — already optimal, not rewrapped. */
 export { observer, Memo, Show } from '@legendapp/state/react'

@@ -148,7 +148,7 @@ Backed by Legend computeds: lazy, glitch-free within a batch.
   maximally targeted — Legend's granularity does the work. Selectors exist for
   *derivations* (computed values, joins), not access paths. Expect a handful per
   domain, not Redux's wall of them.
-- **React Compiler apps MUST use `useNode`, the compiler-safe alias of
+- **React Compiler apps MUST use `useValue`, the compiler-safe alias of
   `use$`** (found on-device 2026-07-17: the compiler and
   eslint-plugin-react-hooks detect hooks by /^use[A-Z0-9]/ — `$` fails, so
   components calling `use$` get memoized AROUND the call, hooks get skipped
