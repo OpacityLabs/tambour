@@ -103,7 +103,7 @@ object arrays want unique, stable `id`s to benefit from keyed optimization.
 **React 19.2.0 (jsdom):** full suite green, including a no-tearing probe of
 store writes interleaved with `startTransition`. No peer or runtime warnings.
 
-**On-device (shine `concordia-probe` branch, iPhone 17 Pro sim, Hermes, RN
+**On-device (shine `tambour-probe` branch, iPhone 17 Pro sim, Hermes, RN
 0.83 New Arch, dev-mode JS):** vendored library ran alongside shine's live
 Redux store. Verified interactively: targeted re-renders (6 updates to a
 sibling row left the other at renders: 1), equals-selector, selectorFamily,

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { eventToStream, statusOf } from "concordia";
-import { use$ } from "concordia/react";
+import { eventToStream, statusOf } from "tambour";
+import { use$ } from "tambour/react";
 import {
   donate,
   refetchBooks,
@@ -76,7 +76,9 @@ function BooksPanel() {
     <section className="panel">
       <header>
         <h2>Library search</h2>
-        <span className="tag">query · mutation · streamSelector · selector</span>
+        <span className="tag">
+          query · mutation · streamSelector · selector
+        </span>
       </header>
       <p className="hint">
         Keyed, cached, stale-while-revalidate. Retype a recent search within 15s
@@ -221,7 +223,7 @@ export default function App() {
   return (
     <main>
       <h1>
-        concordia <span className="dim">showcase</span>
+        tambour <span className="dim">showcase</span>
       </h1>
       <p className="hint">
         Open the Redux DevTools extension: every update, event, and stream on
@@ -229,7 +231,7 @@ export default function App() {
       </p>
       <div className="panels">
         <BooksPanel />
-        <TodosPanel />
+        {/* <TodosPanel /> */}
       </div>
       {bursts.map((id) => (
         <div key={id} className="confetti" aria-hidden>

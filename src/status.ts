@@ -20,7 +20,7 @@ export function statusOf(target: unknown): ReadonlyNode<EventStatus> {
   const status$ = eventStatus(target)
   if (!status$) {
     throw new Error(
-      '[concordia] statusOf: expected a command event. Query metadata lives on the ' +
+      '[tambour] statusOf: expected a command event. Query metadata lives on the ' +
         'query node itself: use$(myQuery(args)) → { data, pending, stale, error, fetchedAt }',
     )
   }

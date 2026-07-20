@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
-// concordia is aliased straight to the library SOURCE (no npm link), and
+// tambour is aliased straight to the library SOURCE (no npm link), and
 // react/rxjs/immer/@legendapp/state resolve from the repo root node_modules —
 // both together guarantee singletons. (Dual Legend instances fail silently;
 // the RN apps pin these in metro.config.js for the same reason.)
@@ -13,8 +13,8 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      'concordia/react': path.resolve(here, '../../src/react.ts'),
-      concordia: path.resolve(here, '../../src/index.ts'),
+      'tambour/react': path.resolve(here, '../../src/react.ts'),
+      tambour: path.resolve(here, '../../src/index.ts'),
     },
     dedupe: ['react', 'react-dom', '@legendapp/state', 'rxjs', 'immer'],
   },

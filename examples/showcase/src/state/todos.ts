@@ -1,6 +1,6 @@
 // Persisted atom + named updates + selectors + an edge-triggered reaction.
 
-import { atom, event, reaction, selector, update, type ConcordiaStorage } from 'concordia'
+import { atom, event, reaction, selector, update, type TambourStorage } from 'tambour'
 import type { ServerTodo } from '../api'
 
 export interface Todo {
@@ -11,7 +11,7 @@ export interface Todo {
 
 // localStorage is synchronous → atoms hydrate during registration, no gate
 // needed (the web analog of MMKV on RN).
-const webStorage: ConcordiaStorage = {
+const webStorage: TambourStorage = {
   getString: key => localStorage.getItem(key),
   setString: (key, value) => localStorage.setItem(key, value),
   remove: key => localStorage.removeItem(key),

@@ -1,4 +1,4 @@
-# concordia showcase
+# tambour showcase
 
 A runnable tour of every primitive, including the **experimental `query` spike**
 (keyed remote reads: dedupe, staleness, invalidation, structural sharing,
@@ -10,7 +10,7 @@ npm install
 npm run dev
 ```
 
-`concordia` is aliased straight to `../../src` (see `vite.config.ts`) — edit
+`tambour` is aliased straight to `../../src` (see `vite.config.ts`) — edit
 library source and the app hot-reloads. React / Legend / RxJS / Immer resolve
 from the repo root so there is exactly one instance of each.
 

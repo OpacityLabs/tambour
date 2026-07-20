@@ -1,4 +1,4 @@
-# Concordia — Design Spec
+# Tambour — Design Spec
 
 A state management system for React and React Native, built on **Legend State**
 primitives, with **Redux** supplying write discipline, **RxJS** supplying temporal
@@ -21,7 +21,7 @@ different axes. Redux adds a third:
 
 Legend alone gives you the first axis. It lacks the sophistication bigger projects
 need — no audit trail, no write discipline, no temporal operators, no middleware, no
-structured effect layer. Concordia adds the other two axes as thin roles on top of
+structured effect layer. Tambour adds the other two axes as thin roles on top of
 Legend's observable tree, without giving up its performance.
 
 ## The seven primitives
@@ -95,6 +95,13 @@ The registry makes this free: `resetAll()` restores every atom to its captured
 initial value and clears the update log. `snapshot()` / `restore()` for
 fixture-based tests.
 
+`resetAll()` does NOT touch queries — their cache is module-level,
+gc-governed state, so entries (data, staleness clocks) survive across tests.
+Call `resetQueries()` beside it (added 2026-07-17 after the opacity-app
+migration suite tripped this): every key starts virgin, no
+ordering-of-tests constraints. `resetQueries(family)` scopes to one family.
+Test helper only — a live subscriber's node detaches from the cache.
+
 ### Scoping
 
 - **Code-splitting: zero API.** There is no central store shape to assemble (unlike
@@ -141,6 +148,14 @@ Backed by Legend computeds: lazy, glitch-free within a batch.
   maximally targeted — Legend's granularity does the work. Selectors exist for
   *derivations* (computed values, joins), not access paths. Expect a handful per
   domain, not Redux's wall of them.
+- **React Compiler apps MUST use `useNode`, the compiler-safe alias of
+  `use$`** (found on-device 2026-07-17: the compiler and
+  eslint-plugin-react-hooks detect hooks by /^use[A-Z0-9]/ — `$` fails, so
+  components calling `use$` get memoized AROUND the call, hooks get skipped
+  on re-render, and every screen crashes with hook-order errors at runtime.
+  Headless bundles and non-React tests cannot catch it; the opacity gate
+  pass did). Same function, exported from `tambour/react`; any
+  /^use[A-Z0-9]/ import alias also works.
 - **Families** are a factory (reselect-factory / Recoil style), with a keyed cache:
 
   ```ts
@@ -226,7 +241,7 @@ invalidate(libraryBooks)                                // or invalidate(library
 ```
 
 - **Server data lives inside the tree; there is no second cache.** TanStack's
-  *semantics* (dedupe, staleness, gc, invalidation) on concordia's *substrate*:
+  *semantics* (dedupe, staleness, gc, invalidation) on tambour's *substrate*:
   one devtools timeline, atom-style persistence, selectors compose over query
   nodes for free. A TanStack-shaped app can still use TanStack beside us; we
   don't ship an adapter.
@@ -250,6 +265,12 @@ invalidate(libraryBooks)                                // or invalidate(library
   sharing (deep-equal payloads keep old references → zero data notifications).
   (Decided 2026-07-15, replacing an earlier `statusOf(queryNode)` accessor:
   the metadata should come back with the query, and consumers pick fields.)
+  **Stale-while-error**: a failed REFETCH keeps the last good `data`
+  alongside `error` (with `stale: true`, so the next activation retries);
+  only a VIRGIN key holds the `default`. The TanStack-trained instinct
+  expects data to reset on error — it doesn't, deliberately: the user keeps
+  reading the last good list while the banner shows the failure.
+  (Dogfood-tripped: the opacity migration's own suite asserted the reset.)
 - **`statusOf` exists for command events only** — `statusOf(commandEvent)` →
   `{ pending, inFlight, error }` (exhaust-coalesced re-fires stay truthful;
   switch supersessions are not errors). Events need an accessor because a
@@ -304,7 +325,7 @@ await renameTodo('t1', 'buy milk')                           // plain typed asyn
   batch — a torn frame (`success && pending`) is structurally impossible
   (render-proof in `test/status-granularity.test.tsx`).
 - **No `data` field on status.** TanStack puts the result on the mutation
-  because it has no state layer to put it in; concordia does — results land
+  because it has no state layer to put it in; tambour does — results land
   in atoms via updates, or belong to the awaiting caller's promise. A
   per-declaration `data` slot would also be wrong under overlapping calls.
 - **No concurrency default.** `'exhaust'` would coalesce a re-fire with
@@ -440,6 +461,12 @@ Known implementation requirements (validated in Phase 0):
   Scoped updates (`update(name, { node: cart$.items[3] }, recipe)`) proxy only the
   subtree; `updateDirect` (raw batched sets, still named and logged) exists for
   drag/scroll/animation paths. Benchmark decides how loudly docs push this.
+- **Drafts are proxies — deep-equality helpers throw on them.** lodash
+  `isEqual` on a draft dies with a proxy-invariant TypeError (its
+  `isPrototype` probe reads `constructor.prototype` through the proxy).
+  Recipes that compare draft state against a payload must unwrap with
+  immer's `current(draft)` first. (Dogfood-caught in the opacity
+  migration's equality-guard recipe, Phase 2.)
 
 ### Undo: time travel is core, product undo is userland
 
@@ -464,6 +491,17 @@ addInterceptor({
   after:  (name, args, patches, inverse) => { /* log, analytics, persist triggers */ },
 })
 ```
+
+Events surface their lifecycle on the same list: `onEventFire` (once per
+LOGICAL run — exhaust-coalesced calls don't re-fire), `onEventError`, and
+`onEventSettle` (added 2026-07-17: once per run on the FINAL outcome after
+retries, with the superseded flag and the run's own args array —
+reference-equal to onEventFire's, so fire/settle pair by identity across
+overlapping runs). Settle is what makes an auto-span interceptor possible:
+fire+error alone can't close a span on success. The opacity migration's
+`telemetry-interceptor.ts` is the worked recipe — spans created AT settle
+with a retroactive fire-time `startTime`, so streamEvents (which never
+settle) can never leak an open span.
 
 Devtools, audit logging, and undo machinery are all just interceptors.
 
@@ -501,7 +539,7 @@ the rest of the API: `event(name, handler, { concurrency: 'exhaust' })`.
 A vanilla async function that imports and calls updates is completely legal — its
 writes are still named, logged, batched, atomic, and undoable. The system's
 guarantees live at the **update** layer; Redux had one mandatory door (`dispatch`),
-Concordia's mandatory door is `update`, and `event` is a service wrapper, not a
+Tambour's mandatory door is `update`, and `event` is a service wrapper, not a
 gate. Wrapping buys four things:
 
 1. **Causal attribution** — the runtime tracks invocation context, so the log
@@ -547,6 +585,11 @@ awaited by its caller *and* observed by a pipeline, neither knowing about the ot
   boolean`; **default 0** — the runtime can't know a handler is idempotent, so
   repeating a server write is opt-in per event. `retryDelay` — ms or
   `(failureCount, error) => ms`; default exponential 1s, 2s, 4s… capped 30s.
+  The exponential default suits REQUEST-shaped events; it is wrong for
+  tight polls — on a 1s cadence it stretches a transient blip into ~7s of
+  silence before the run fails. Poll-tick events set `retryDelay: 0` (or a
+  small constant) per call site — opacity's submission poll is the worked
+  example.
   `timeout` — per-ATTEMPT budget; a late attempt fails with `TimeoutError`
   (exported) and retries if allowed; the underlying work is not cancelled and
   is deliberately NOT wired to the switch AbortSignal, whose abort means
@@ -646,8 +689,8 @@ so devtools is *an interceptor that forwards to a UI*:
 
 ## Packaging
 
-Monorepo: `@concordia/state` (core), `@concordia/state-react` (thin: re-exports
-Legend's `use$`/`observer`, hydration gate, MMKV adapter), `@concordia/state-devtools`.
+Monorepo: `@tambour/state` (core), `@tambour/state-react` (thin: re-exports
+Legend's `use$`/`observer`, hydration gate, MMKV adapter), `@tambour/state-devtools`.
 
 - `@legendapp/state` and `rxjs` are **peer dependencies** of core.
 - `streamSelector` accepts anything Observable-shaped (`Symbol.observable` interop) —

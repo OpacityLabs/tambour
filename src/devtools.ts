@@ -30,7 +30,7 @@ export interface DevtoolsOptions {
 export function connectDevtools(options: DevtoolsOptions = {}): () => void {
   const extension = (globalThis as any).__REDUX_DEVTOOLS_EXTENSION__
   const connector: DevtoolsConnector | undefined =
-    options.connector ?? extension?.connect({ name: options.name ?? 'concordia' })
+    options.connector ?? extension?.connect({ name: options.name ?? 'tambour' })
   if (!connector) return () => {}   // no extension, no cost
 
   connector.init(snapshot())

@@ -38,7 +38,7 @@ const ALWAYS_HYDRATED$ = observable(true)
 export function atom<T>(name: string, initial: T, options?: AtomOptions): Atom<T> {
   if (registry.has(name)) {
     throw new Error(
-      `[concordia] duplicate atom name '${name}'. Atom names must be unique; ` +
+      `[tambour] duplicate atom name '${name}'. Atom names must be unique; ` +
       `in tests, call clearRegistry() between cases.`,
     )
   }

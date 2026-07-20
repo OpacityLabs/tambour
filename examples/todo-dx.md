@@ -1,4 +1,4 @@
-# Concordia DX walkthrough — a todo app with bells and whistles
+# Tambour DX walkthrough — a todo app with bells and whistles
 
 Not a full implementation — snippets showcasing the day-to-day feel of each
 primitive, laid out per the spec's file conventions. The "bells and whistles":

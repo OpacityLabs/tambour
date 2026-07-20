@@ -35,11 +35,11 @@ export function reaction(name: string, ...rest: unknown[]): () => void {
 
   const react = rest.pop() as (...values: unknown[]) => void
   if (typeof react !== 'function') {
-    throw new Error('[concordia] reaction: last non-options argument must be a function')
+    throw new Error('[tambour] reaction: last non-options argument must be a function')
   }
   const deps = rest as Node<unknown>[]
   if (deps.length === 0) {
-    throw new Error('[concordia] reaction: at least one dependency is required')
+    throw new Error('[tambour] reaction: at least one dependency is required')
   }
 
   let lastValues: unknown[] | null = null
@@ -91,7 +91,7 @@ function guarded(name: string, fn: () => void): void {
     if (!reportedThisTask) {
       reportedThisTask = true
       console.error(
-        `[concordia] reaction loop detected (${runsThisTask} reaction runs in one ` +
+        `[tambour] reaction loop detected (${runsThisTask} reaction runs in one ` +
         `synchronous task; recent chain: ${recentChain.join(' → ')}). A reaction is ` +
         `(transitively) re-triggering itself through an update. Circuit-breaking.`,
       )

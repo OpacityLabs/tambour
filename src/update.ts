@@ -122,7 +122,7 @@ export function update<S extends UpdateScope, A extends unknown[]>(
       const atomKey = patch.path[0] as string
       if (!writes[atomKey]) {
         throw new Error(
-          `[concordia] update '${name}' wrote to '${atomKey}', which is not in its ` +
+          `[tambour] update '${name}' wrote to '${atomKey}', which is not in its ` +
           `write scope (${writeKeys.join(', ')}). Declare it under writes to allow this.`,
         )
       }
@@ -146,7 +146,7 @@ export function update<S extends UpdateScope, A extends unknown[]>(
     let spent = false
     return () => {
       if (spent) {
-        console.warn(`[concordia] undo for update '${name}' already applied — ignored`)
+        console.warn(`[tambour] undo for update '${name}' already applied — ignored`)
         return
       }
       if (inverse.length === 0) {

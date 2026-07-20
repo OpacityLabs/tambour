@@ -13,8 +13,8 @@
     "noEmit": true,
     "types": ["vite/client"],
     "paths": {
-      "concordia": ["../../src/index.ts"],
-      "concordia/react": ["../../src/react.ts"]
+      "tambour": ["../../src/index.ts"],
+      "tambour/react": ["../../src/react.ts"]
     }
   },
   "include": ["src", "vite.config.ts"]

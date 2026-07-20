@@ -1,7 +1,7 @@
 // A command: named, awaitable, exhaust-protected. Mash the button — re-fires
 // return the in-flight promise and statusOf stays truthful (one pending).
 
-import { event } from 'concordia'
+import { event } from 'tambour'
 import { pullTodos } from '../api'
 import { mergeServerTodos } from './todos'
 

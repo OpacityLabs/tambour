@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { observable } from '@legendapp/state'
 import { filter, map } from 'rxjs/operators'
-import { query, invalidate, replaceEqualDeep, stableArgsKey } from '../src/query'
+import { query, invalidate, resetQueries, replaceEqualDeep, stableArgsKey } from '../src/query'
 import { selector } from '../src/selector'
 import { streamSelector } from '../src/streamSelector'
 import { atomToStream } from '../src/bridges'
@@ -442,5 +442,63 @@ describe('the keepPrevious recipe (temporal gating, no new API)', () => {
     await tick()
     expect(settled$.get()).toEqual(['War and Peace'])
     dispose()
+  })
+})
+
+describe('resetQueries: the test-suite escape hatch', () => {
+  it('drops every cached entry — a re-observed key is VIRGIN (default data, refetch)', async () => {
+    const { fetcher, calls } = controlledFetcher<string>()
+    const q = query('reset/all', fetcher, { default: 'none' })
+
+    let node$ = q('a') as any
+    let dispose = node$.onChange(() => {})
+    node$.get()
+    await tick()
+    calls[0]!.resolve('landed')
+    await tick()
+    expect(node$.get().data).toBe('landed')
+    dispose()
+
+    resetQueries()
+
+    node$ = q('a') as any // fresh entry, not the old node
+    expect(node$.get().data).toBe('none') // virgin: default, not the old value
+    expect(node$.get().stale).toBe(true)
+    dispose = node$.onChange(() => {})
+    node$.get()
+    await tick()
+    expect(calls.length).toBe(2) // re-observation refetches
+    dispose()
+  })
+
+  it('scoped to one family: the other family keeps serving its cache', async () => {
+    const { fetcher: fa, calls: ca } = controlledFetcher<string>()
+    const { fetcher: fb, calls: cb } = controlledFetcher<string>()
+    const qa = query('reset/scoped-a', fa, { default: '', staleTime: 60_000 })
+    const qb = query('reset/scoped-b', fb, { default: '', staleTime: 60_000 })
+
+    const a$ = qa('k') as any
+    const b$ = qb('k') as any
+    const da = a$.onChange(() => {})
+    const db = b$.onChange(() => {})
+    a$.get(); b$.get()
+    await tick()
+    ca[0]!.resolve('A'); cb[0]!.resolve('B')
+    await tick()
+    da(); db()
+
+    resetQueries(qa)
+
+    expect((qa('k') as any).get().data).toBe('') // virgin again
+    expect((qb('k') as any).get().data).toBe('B') // untouched, served from cache
+    const db2 = (qb('k') as any).onChange(() => {})
+    ;(qb('k') as any).get()
+    await tick()
+    expect(cb.length).toBe(1) // fresh within staleTime: no refetch either
+    db2()
+  })
+
+  it('throws on a non-family argument (same contract as invalidate)', () => {
+    expect(() => resetQueries({} as object)).toThrowError(/not a query family/)
   })
 })

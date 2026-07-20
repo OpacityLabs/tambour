@@ -81,6 +81,10 @@ interface Entry {
 
 const NODE_ENTRY = new WeakMap<object, Entry>()
 const FAMILY_ENTRIES = new WeakMap<object, Map<string, Entry>>()
+// Iterable registry for resetQueries(). Strong references are fine: query
+// families are module-level singletons — they never GC in real programs, and
+// the test processes this exists for are short-lived anyway.
+const ALL_FAMILY_CACHES = new Set<Map<string, Entry>>()
 
 export function query<Args extends unknown[], T>(
   name: string,
@@ -207,7 +211,43 @@ export function query<Args extends unknown[], T>(
 
   Object.defineProperty(family, 'name', { value: name })
   FAMILY_ENTRIES.set(family, cache)
+  ALL_FAMILY_CACHES.add(cache)
   return family
+}
+
+/**
+ * TEST HELPER — drop every cached query entry (all families, or one).
+ *
+ * `resetAll()` restores atoms but cannot touch queries: their cache is
+ * module-level, gc-governed state, so entries (data, staleness clocks,
+ * in-flight dedupe) leak across tests — the opacity-app migration suite
+ * tripped exactly this, working around it with `invalidate(family)` in
+ * beforeEach plus careful test ordering (invalidation keeps old data;
+ * only a VIRGIN key holds the default). Call this next to `resetAll()`
+ * instead: every key starts virgin, no ordering constraints.
+ *
+ * Not for app code: a live subscriber keeps its node working (the entry
+ * lives on in its closure) but the cache forgets it — the next
+ * `family(args)` call builds a fresh entry, and the two never reconcile.
+ * Between tests nothing is subscribed, which is the point.
+ */
+export function resetQueries(family?: object): void {
+  let caches: Iterable<Map<string, Entry>>
+  if (family === undefined) {
+    caches = ALL_FAMILY_CACHES
+  } else {
+    const cache = FAMILY_ENTRIES.get(family)
+    if (!cache) {
+      throw new Error('[tambour] resetQueries: not a query family')
+    }
+    caches = [cache]
+  }
+  for (const cache of caches) {
+    for (const entry of cache.values()) {
+      if (entry.evictTimer) clearTimeout(entry.evictTimer)
+    }
+    cache.clear()
+  }
 }
 
 /**
@@ -224,7 +264,7 @@ export function invalidate(target: object): void {
       ? [NODE_ENTRY.get(target)!]
       : null
   if (!entries) {
-    throw new Error('[concordia] invalidate: not a query family or query node')
+    throw new Error('[tambour] invalidate: not a query family or query node')
   }
   for (const entry of entries) {
     entry.invalidated = true
@@ -271,7 +311,7 @@ function assertPlainData(value: unknown, path: string, name: string): void {
   if (t === 'number') {
     if (!Number.isFinite(value)) {
       throw new Error(
-        `[concordia] query '${name}': argument at ${path} is ${String(value)}, which hashes ` +
+        `[tambour] query '${name}': argument at ${path} is ${String(value)}, which hashes ` +
           `ambiguously (JSON turns it into null). Use a finite number.`,
       )
     }
@@ -288,7 +328,7 @@ function assertPlainData(value: unknown, path: string, name: string): void {
   const kind =
     t === 'object' ? ((value as object).constructor?.name ?? 'object') : t
   throw new Error(
-    `[concordia] query '${name}': argument at ${path} is not plain data (got ${kind}). ` +
+    `[tambour] query '${name}': argument at ${path} is not plain data (got ${kind}). ` +
       `Query args must be strings, finite numbers, booleans, null, plain objects, or ` +
       `arrays — convert at the call site (e.g. a Date becomes date.toISOString()).`,
   )

@@ -15,7 +15,7 @@ import {
   selector,
   streamSelector,
   update,
-} from 'concordia'
+} from 'tambour'
 import { debounceTime, distinctUntilChanged, filter, map } from 'rxjs/operators'
 import { donateBook, fetchBooks, type Book } from '../api'
 

@@ -73,6 +73,6 @@ export async function pullTodos(): Promise<ServerTodo[]> {
   return [
     { id: 'srv-1', title: 'Water the plants', done: false },
     { id: 'srv-2', title: 'Read Persuasion', done: false },
-    { id: 'srv-3', title: 'Ship the concordia query spike', done: false },
+    { id: 'srv-3', title: 'Ship the tambour query spike', done: false },
   ]
 }

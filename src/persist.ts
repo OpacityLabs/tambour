@@ -1,8 +1,8 @@
 import { observable } from '@legendapp/state'
-import type { ConcordiaStorage } from './storage'
+import type { TambourStorage } from './storage'
 
 export interface PersistConfig {
-  storage: ConcordiaStorage
+  storage: TambourStorage
   /** Current schema version (default 1). Bump when the persisted shape changes. */
   version?: number
   /** Stepwise migrations, keyed by TARGET version: `{ 2: v1 => v2shape, 3: v2 => v3shape }`.
@@ -61,7 +61,7 @@ export function persistAtom(node$: any, atomName: string, config: PersistConfig)
           applyingStored = false
         }
       } catch (error) {
-        console.error(`[concordia] failed to hydrate atom '${atomName}':`, error)
+        console.error(`[tambour] failed to hydrate atom '${atomName}':`, error)
       }
     } else {
       // No stored value: materialize the initial value NOW. This makes
@@ -81,7 +81,7 @@ export function persistAtom(node$: any, atomName: string, config: PersistConfig)
   const whenHydrated =
     raw instanceof Promise
       ? raw.then(applyStored, error => {
-          console.error(`[concordia] storage read failed for atom '${atomName}':`, error)
+          console.error(`[tambour] storage read failed for atom '${atomName}':`, error)
           hydrated$.set(true)
         })
       : (applyStored(raw), Promise.resolve())

@@ -1,4 +1,4 @@
-// concordia — public API
+// tambour — public API
 
 export {
   atom,
@@ -12,14 +12,14 @@ export {
   type AtomOptions,
 } from './atom'
 export type { PersistConfig } from './persist'
-export { asyncStorage, memoryStorage, mmkvStorage, type ConcordiaStorage } from './storage'
+export { asyncStorage, memoryStorage, mmkvStorage, type TambourStorage } from './storage'
 export { selector, type SelectorOptions } from './selector'
 export { selectorFamily, type FamilyOptions } from './selectorFamily'
 export { streamSelector, type StreamSelectorOptions } from './streamSelector'
 // EXPERIMENTAL — keyed remote-read primitive (spike; API not frozen).
 // The query node's value IS the result envelope: { data, pending, stale,
 // error, fetchedAt }. statusOf exists for command events only.
-export { query, invalidate, type QueryOptions, type QueryResult } from './query'
+export { query, invalidate, resetQueries, type QueryOptions, type QueryResult } from './query'
 // EXPERIMENTAL — a server write: an event whose status node rides on the
 // function (m.status ≡ statusOf(m)) and whose settle invalidates queries.
 export { mutation, type Mutation, type MutationOptions } from './mutation'

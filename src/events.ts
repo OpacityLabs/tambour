@@ -1,7 +1,7 @@
 import { batch, observable } from '@legendapp/state'
 import { Observable } from 'rxjs'
 import { currentOrigin, runWithOrigin } from './context'
-import { runEventError, runEventFire } from './interceptors'
+import { runEventError, runEventFire, runEventSettle } from './interceptors'
 import type { ReadonlyNode } from './types'
 
 /** Observable in-flight status of a command event (see `statusOf`). */
@@ -68,7 +68,7 @@ export const defaultRetryDelay = (failureCount: number): number =>
 /** Thrown when an attempt exceeds `timeout` ms. Retryable like any failure. */
 export class TimeoutError extends Error {
   constructor(eventName: string, ms: number) {
-    super(`[concordia] event '${eventName}' attempt timed out after ${ms}ms`)
+    super(`[tambour] event '${eventName}' attempt timed out after ${ms}ms`)
     this.name = 'TimeoutError'
   }
 }
@@ -77,14 +77,14 @@ export class TimeoutError extends Error {
  *  per run at settle with the ORIGINAL call args — never the switch signal,
  *  never per-attempt. mutation() hangs `invalidates` here so invalidation
  *  can't run for intermediate retry failures or superseded runs. */
-export const kOnSettle = Symbol('concordia.onSettle')
+export const kOnSettle = Symbol('tambour.onSettle')
 
 type OnSettle = (superseded: boolean, error: unknown, args: unknown[]) => void
 
 type Listener = (payload: unknown) => void
 
-const LISTENERS = Symbol('concordia.listeners')
-const EVENT_NAME = Symbol('concordia.eventName')
+const LISTENERS = Symbol('tambour.listeners')
+const EVENT_NAME = Symbol('tambour.eventName')
 
 interface EventInternals {
   [LISTENERS]: Set<Listener>
@@ -229,11 +229,13 @@ export function event(
         const superseded = myController?.signal.aborted ?? false
         settle(superseded)
         fireOnSettle(superseded)
+        runEventSettle(name, undefined, args, superseded)
       },
       error => {
         const superseded = myController?.signal.aborted ?? false
         settle(superseded, error)
         fireOnSettle(superseded, error)
+        runEventSettle(name, error, args, superseded)
       },
     )
 

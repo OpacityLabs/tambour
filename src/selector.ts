@@ -43,12 +43,12 @@ export function selector(...args: unknown[]): any {
 
   const combiner = args.pop() as (...values: unknown[]) => unknown
   if (typeof combiner !== 'function') {
-    throw new Error('[concordia] selector: last non-options argument must be a function')
+    throw new Error('[tambour] selector: last non-options argument must be a function')
   }
   const deps = args as Node<unknown>[]
   for (const d of deps) {
     if (!isNode(d)) {
-      throw new Error('[concordia] selector: dependencies must be state nodes (atoms, node paths, or selectors)')
+      throw new Error('[tambour] selector: dependencies must be state nodes (atoms, node paths, or selectors)')
     }
   }
 
