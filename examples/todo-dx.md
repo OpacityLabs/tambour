@@ -9,7 +9,7 @@ a sync command with double-fire protection, and a celebration reaction.
 
 ```ts
 // todos.atom.ts — survives restarts, migrates across versions
-export const todos$ = atom('todos', { items: [] as Todo[] }, {
+export const todos = atom('todos', { items: [] as Todo[] }, {
   persist: { storage: mmkvStorage, version: 2, migrations: {
     2: v1 => ({ items: v1.items.map(t => ({ ...t, tags: [] })) },
   )},
@@ -17,7 +17,7 @@ export const todos$ = atom('todos', { items: [] as Todo[] }, {
 
 // todoUi.atom.ts — session-only: filter, editing state. Not persisted,
 // because it lives in its own atom. That's the whole persistence config.
-export const todoUi$ = atom('todoUi', {
+export const todoUi = atom('todoUi', {
   filter: 'all' as 'all' | 'active' | 'done',
   editingId: null as string | null,
 })
@@ -27,12 +27,12 @@ export const todoUi$ = atom('todoUi', {
 
 ```ts
 // todos.updates.ts
-export const addTodo = update('todos/add', { todos: todos$ },
+export const addTodo = update('todos/add', { todos: todos },
   (d, title: string) => {
     d.todos.items.push({ id: nanoid(), title, done: false, tags: [] })
   })
 
-export const toggleTodo = update('todos/toggle', { todos: todos$ },
+export const toggleTodo = update('todos/toggle', { todos: todos },
   (d, id: string) => {
     const t = d.todos.items.find(t => t.id === id)!
     t.done = !t.done
@@ -41,19 +41,19 @@ export const toggleTodo = update('todos/toggle', { todos: todos$ },
 // Multi-atom: removing a todo must also clear the editor if it was open on it.
 // One transition, atomic across both atoms — no orchestration, no torn state.
 export const removeTodo = update('todos/remove',
-  { todos: todos$, ui: todoUi$ },
+  { todos: todos, ui: todoUi },
   (d, id: string) => {
     d.todos.items = d.todos.items.filter(t => t.id !== id)
     if (d.ui.editingId === id) d.ui.editingId = null
   })
 
-export const clearCompleted = update('todos/clearCompleted', { todos: todos$ },
+export const clearCompleted = update('todos/clearCompleted', { todos: todos },
   d => { d.todos.items = d.todos.items.filter(t => !t.done) })
 ```
 
 Every call site is a plain typed function: `addTodo('buy milk')`. The devtools
 log reads `todos/add {title: "buy milk"}` → patches. "What can write to
-`todoUi$`?" is a grep for `todoUi$` across `*.updates.ts`.
+`todoUi`?" is a grep for `todoUi` across `*.updates.ts`.
 
 ## The selectors — derivations only; reads don't need them
 
@@ -62,8 +62,8 @@ log reads `todos/add {title: "buy milk"}` → patches. "What can write to
 
 // createSelector-style: deps in, plain values into a pure combiner.
 // Joins two atoms; sync, glitch-free, recomputes once per batch.
-export const visibleTodos$ = selector(
-  todos$.items, todoUi$.filter,
+export const visibleTodos = selector(
+  todos.items, todoUi.filter,
   (items, filter) => {
     if (filter === 'active') return items.filter(t => !t.done)
     if (filter === 'done')   return items.filter(t => t.done)
@@ -71,15 +71,15 @@ export const visibleTodos$ = selector(
   })
 
 // Recomputes often, but consumers only re-render when the numbers change
-export const stats$ = selector(
-  todos$.items,
+export const stats = selector(
+  todos.items,
   items => ({ total: items.length, done: items.filter(t => t.done).length }),
   { equals: shallowEqual },
 )
 
 // Family: same id → same cached node, evicted when the last row unmounts
 export const todoById = selectorFamily((id: string) =>
-  selector(todos$.items, items => items.find(t => t.id === id))
+  selector(todos.items, items => items.find(t => t.id === id))
 )
 ```
 
@@ -113,7 +113,7 @@ export const celebrate = event('todos/celebrate', async () => {
 // Keystrokes Rx suppresses never touch React: no render for the raw
 // keystroke, none while debouncing, none for stale responses (switchMap
 // aborts them), none for a repeated query (distinctUntilChanged).
-export const suggestions$ = streamSelector(
+export const suggestions = streamSelector(
   eventToStream(searchInput).pipe(
     debounceTime(200),
     distinctUntilChanged(),
@@ -129,9 +129,9 @@ export const suggestions$ = streamSelector(
 // todos.reactions.ts — a boolean selector + a reaction = edge-triggering by
 // construction: the selector only notifies when the boolean flips, so this
 // fires once when the last todo is checked off, not on every change after.
-const allDone$ = selector(stats$, ({ total, done }) => total > 0 && done === total)
+const allDone = selector(stats, ({ total, done }) => total > 0 && done === total)
 
-reaction('todos/allDone', allDone$, done => {
+reaction('todos/allDone', allDone, done => {
   if (done) celebrate()        // fire an event (or call an update) — or noop
 }, { immediate: true })        // evaluate at startup: a hydrated done-list still celebrates
 ```
@@ -142,7 +142,7 @@ reaction('todos/allDone', allDone$, done => {
 // A row re-renders only when ITS todo changes. Toggling row 3 never
 // renders row 5, the list, or anything else.
 function TodoRow({ id }: { id: string }) {
-  const todo = use$(todoById(id))
+  const todo = useValue(todoById(id))
   return (
     <Row onPress={() => toggleTodo(id)} onLongPress={() => removeTodo(id)}>
       <Check done={todo.done} /> <Text>{todo.title}</Text>
@@ -151,9 +151,9 @@ function TodoRow({ id }: { id: string }) {
 }
 
 // Sync value and stream value: consumed identically. The call site
-// can't tell suggestions$ is async — it's just a node with a value.
+// can't tell suggestions is async — it's just a node with a value.
 function SearchBox() {
-  const suggestions = use$(suggestions$)
+  const suggestions = useValue(suggestions)
   return (
     <>
       <TextInput onChangeText={text => searchInput(text)} />
@@ -163,7 +163,7 @@ function SearchBox() {
 }
 
 function StatsBar() {
-  const { total, done } = use$(stats$)          // re-renders only when counts change
+  const { total, done } = useValue(stats)          // re-renders only when counts change
   return <Text>{done}/{total} done</Text>
 }
 
@@ -176,7 +176,7 @@ function SyncButton() {
 
 // Gate on persisted-atom hydration (a non-issue on RN with MMKV — sync)
 function App() {
-  const ready = use$(todos$.hydrated$)
+  const ready = useValue(todos.hydrated)
   return ready ? <TodoScreen /> : <Splash />
 }
 ```

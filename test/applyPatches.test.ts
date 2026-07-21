@@ -6,10 +6,10 @@ import { applyPatches } from '../src/applyPatches'
 /** Run a recipe through Immer, apply the patches to a Legend observable,
  *  and assert the observable ends up deep-equal to Immer's `next`. */
 function check<T extends object>(base: T, recipe: (d: T) => void) {
-  const obs$ = observable(structuredClone(base)) as any
+  const obs = observable(structuredClone(base)) as any
   const [next, patches] = produceWithPatches(structuredClone(base), recipe as any)
-  applyPatches(obs$, patches)
-  expect(obs$.peek()).toEqual(next)
+  applyPatches(obs, patches)
+  expect(obs.peek()).toEqual(next)
   return { next, patches }
 }
 
@@ -50,28 +50,28 @@ describe('applyPatches: array ops', () => {
 
 describe('applyPatches: transactionality', () => {
   it('a throwing recipe is a clean no-op', () => {
-    const obs$ = observable({ a: 1, b: 2 }) as any
+    const obs = observable({ a: 1, b: 2 }) as any
     const recipe: (d: { a: number; b: number }) => void = d => {
       d.a = 99
       throw new Error('validation failed')
     }
     expect(() => {
       const [, patches] = produceWithPatches({ a: 1, b: 2 }, recipe as any)
-      applyPatches(obs$, patches)
+      applyPatches(obs, patches)
     }).toThrow('validation failed')
-    expect(obs$.peek()).toEqual({ a: 1, b: 2 })
+    expect(obs.peek()).toEqual({ a: 1, b: 2 })
   })
 })
 
 describe('freeze safety', () => {
   it('does not freeze Legend internals via structural sharing', () => {
-    const obs$ = observable({ kept: { deep: 1 }, changed: 0 }) as any
-    const base: { kept: { deep: number }; changed: number } = obs$.peek()
+    const obs = observable({ kept: { deep: 1 }, changed: 0 }) as any
+    const base: { kept: { deep: number }; changed: number } = obs.peek()
     const [, patches] = produceWithPatches(base, d => { d.changed = 1 })
-    applyPatches(obs$, patches)
+    applyPatches(obs, patches)
     // if autoFreeze leaked, this second targeted set would throw or silently fail
-    obs$.kept.deep.set(2)
-    expect(obs$.kept.deep.peek()).toBe(2)
+    obs.kept.deep.set(2)
+    expect(obs.kept.deep.peek()).toBe(2)
   })
 })
 
@@ -81,11 +81,11 @@ describe('applyPatches: array identity (the Immer promise)', () => {
   // the shine favorites bug came from appends mutating in place while removes
   // replaced, so staleness depended on the direction of the last change.
   function applied<T extends object>(base: T, recipe: (d: T) => void, options?: { fastAppends?: boolean }) {
-    const obs$ = observable(structuredClone(base)) as any
-    const before = obs$.items.peek()
+    const obs = observable(structuredClone(base)) as any
+    const before = obs.items.peek()
     const [, patches] = produceWithPatches(structuredClone(base), recipe as any)
-    applyPatches(obs$, patches, undefined, options)
-    return { before, after: obs$.items.peek() }
+    applyPatches(obs, patches, undefined, options)
+    return { before, after: obs.items.peek() }
   }
 
   it('append produces a new array', () => {

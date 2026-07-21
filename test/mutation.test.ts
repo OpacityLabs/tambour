@@ -59,9 +59,9 @@ describe('mutation invalidates on settle', () => {
     const { fetcher, calls } = controlledFetcher<number>()
     const q = query('m/inv-ok', fetcher, { staleTime: 60_000, default: 0 })
 
-    const node$ = q() as any
-    const dispose = node$.onChange(() => {})
-    node$.get()
+    const node = q() as any
+    const dispose = node.onChange(() => {})
+    node.get()
     await tick()
     calls[0]!.resolve(1)
     await tick()
@@ -73,7 +73,7 @@ describe('mutation invalidates on settle', () => {
     expect(calls.length).toBe(2) // settle → stale → active key refetched
     calls[1]!.resolve(2)
     await tick()
-    expect(node$.get().data).toBe(2)
+    expect(node.get().data).toBe(2)
     dispose()
   })
 
@@ -81,9 +81,9 @@ describe('mutation invalidates on settle', () => {
     const { fetcher, calls } = controlledFetcher<number>()
     const q = query('m/inv-err', fetcher, { staleTime: 60_000, default: 0 })
 
-    const node$ = q() as any
-    const dispose = node$.onChange(() => {})
-    node$.get()
+    const node = q() as any
+    const dispose = node.onChange(() => {})
+    node.get()
     await tick()
     calls[0]!.resolve(1)
     await tick()
@@ -103,11 +103,11 @@ describe('mutation invalidates on settle', () => {
     const callsFor = (key: string) => calls.filter(c => c.args[0] === key)
 
     // two active, fresh keys
-    const a$ = q('a') as any
-    const b$ = q('b') as any
-    const disposeA = a$.onChange(() => {})
-    const disposeB = b$.onChange(() => {})
-    a$.get(); b$.get()
+    const a = q('a') as any
+    const b = q('b') as any
+    const disposeA = a.onChange(() => {})
+    const disposeB = b.onChange(() => {})
+    a.get(); b.get()
     await tick()
     callsFor('a')[0]!.resolve(1)
     callsFor('b')[0]!.resolve(1)
@@ -128,11 +128,11 @@ describe('mutation invalidates on settle', () => {
     const todoDetail = query('m/keyed-dyn', fetcher, { staleTime: 60_000, default: 0 })
     const callsFor = (key: string) => calls.filter(c => c.args[0] === key)
 
-    const a$ = todoDetail('a') as any
-    const b$ = todoDetail('b') as any
-    const disposeA = a$.onChange(() => {})
-    const disposeB = b$.onChange(() => {})
-    a$.get(); b$.get()
+    const a = todoDetail('a') as any
+    const b = todoDetail('b') as any
+    const disposeA = a.onChange(() => {})
+    const disposeB = b.onChange(() => {})
+    a.get(); b.get()
     await tick()
     callsFor('a')[0]!.resolve(1)
     callsFor('b')[0]!.resolve(1)
@@ -173,9 +173,9 @@ describe('mutation invalidates on settle', () => {
     const { fetcher, calls } = controlledFetcher<number>()
     const q = query('m/inv-retry', fetcher, { staleTime: 60_000, default: 0 })
 
-    const node$ = q() as any
-    const dispose = node$.onChange(() => {})
-    node$.get()
+    const node = q() as any
+    const dispose = node.onChange(() => {})
+    node.get()
     await tick()
     calls[0]!.resolve(1)
     await tick()
@@ -199,9 +199,9 @@ describe('mutation invalidates on settle', () => {
     const { fetcher, calls } = controlledFetcher<number>()
     const q = query('m/inv-switch', fetcher, { staleTime: 60_000, default: 0 })
 
-    const node$ = q() as any
-    const dispose = node$.onChange(() => {})
-    node$.get()
+    const node = q() as any
+    const dispose = node.onChange(() => {})
+    node.get()
     await tick()
     calls[0]!.resolve(1)
     await tick()
@@ -234,11 +234,11 @@ describe('mutation invalidates on settle', () => {
 
 describe('the optimistic recipe, end to end', () => {
   it('flips instantly, rolls back on failure, and status stays truthful', async () => {
-    const todos$ = observable({
+    const todos = observable({
       items: [{ id: 't1', done: false }, { id: 't2', done: false }],
     }) as any
 
-    const applyToggle = update('opt/toggle', { t: todos$ }, (d, id: string) => {
+    const applyToggle = update('opt/toggle', { t: todos }, (d, id: string) => {
       const todo = d.t.items.find((t: any) => t.id === id)
       todo.done = !todo.done
     })
@@ -256,14 +256,14 @@ describe('the optimistic recipe, end to end', () => {
 
     const p = toggleTodo('t1').catch(() => {})
     // BEFORE the server settles: the UI already flipped
-    expect(todos$.items[0].done.peek()).toBe(true)
+    expect(todos.items[0].done.peek()).toBe(true)
 
     gate.reject(new Error('500'))
     await p
     await tick()
 
     // rolled back — and only the touched leaf; t2 untouched throughout
-    expect(todos$.items.peek()).toEqual([
+    expect(todos.items.peek()).toEqual([
       { id: 't1', done: false },
       { id: 't2', done: false },
     ])

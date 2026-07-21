@@ -22,7 +22,7 @@ export interface PersistConfig {
 }
 
 export interface PersistHandle {
-  hydrated$: any               // Legend observable<boolean> (kept internal-typed)
+  hydrated: any               // Legend observable<boolean> (kept internal-typed)
   whenHydrated: Promise<void>
 }
 
@@ -39,10 +39,10 @@ interface Stored {
  * serialized from the change event's value — never a peek). Hydration
  * failures log and leave the initial value; the app keeps working.
  */
-export function persistAtom(node$: any, atomName: string, config: PersistConfig): PersistHandle {
+export function persistAtom(node: any, atomName: string, config: PersistConfig): PersistHandle {
   const key = config.key ?? atomName
   const targetVersion = config.version ?? 1
-  const hydrated$ = observable(false)
+  const hydrated = observable(false)
   let applyingStored = false
 
   const applyStored = (raw: string | null | undefined): void => {
@@ -56,7 +56,7 @@ export function persistAtom(node$: any, atomName: string, config: PersistConfig)
         }
         applyingStored = true
         try {
-          node$.set(data)
+          node.set(data)
         } finally {
           applyingStored = false
         }
@@ -71,10 +71,10 @@ export function persistAtom(node$: any, atomName: string, config: PersistConfig)
       // drops unknown keys the moment its reducer set shrinks).
       void config.storage.setString(
         key,
-        JSON.stringify({ v: targetVersion, data: node$.peek() }),
+        JSON.stringify({ v: targetVersion, data: node.peek() }),
       )
     }
-    hydrated$.set(true)
+    hydrated.set(true)
   }
 
   const raw = config.storage.getString(key)
@@ -82,7 +82,7 @@ export function persistAtom(node$: any, atomName: string, config: PersistConfig)
     raw instanceof Promise
       ? raw.then(applyStored, error => {
           console.error(`[tambour] storage read failed for atom '${atomName}':`, error)
-          hydrated$.set(true)
+          hydrated.set(true)
         })
       : (applyStored(raw), Promise.resolve())
 
@@ -95,7 +95,7 @@ export function persistAtom(node$: any, atomName: string, config: PersistConfig)
   let trailing: ReturnType<typeof setTimeout> | null = null
   let latest: unknown
 
-  node$.onChange(({ value }: { value: unknown }) => {
+  node.onChange(({ value }: { value: unknown }) => {
     if (applyingStored) return
     if (!throttleMs) {
       write(value)
@@ -116,5 +116,5 @@ export function persistAtom(node$: any, atomName: string, config: PersistConfig)
     }
   })
 
-  return { hydrated$, whenHydrated }
+  return { hydrated, whenHydrated }
 }

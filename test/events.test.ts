@@ -102,8 +102,8 @@ describe('streamEvent + eventToStream', () => {
 
 describe('causal attribution', () => {
   it('updates called synchronously inside a handler carry the event as origin', async () => {
-    const a$ = atom('a', { v: 0 })
-    const setV = update('a/set', { a: a$ }, (d, v: number) => { d.a.v = v })
+    const a = atom('a', { v: 0 })
+    const setV = update('a/set', { a: a }, (d, v: number) => { d.a.v = v })
     const origins: (string | null)[] = []
     const off = addInterceptor({ after: r => origins.push(r.origin) })
 
@@ -118,34 +118,34 @@ describe('causal attribution', () => {
 
 describe('update hardening', () => {
   it('before interceptor can veto: recipe never runs, atoms untouched', () => {
-    const a$ = atom('a', { v: 1 })
+    const a = atom('a', { v: 1 })
     const recipe = vi.fn((d: any) => { d.a.v = 99 })
-    const setV = update('a/set', { a: a$ }, recipe)
+    const setV = update('a/set', { a: a }, recipe)
     const off = addInterceptor({
       before: name => { if (name === 'a/set') throw new Error('vetoed') },
     })
 
     expect(() => setV()).toThrow('vetoed')
     expect(recipe).not.toHaveBeenCalled()
-    expect(a$.v.peek()).toBe(1)
+    expect(a.v.peek()).toBe(1)
     off()
   })
 
   it('reads scope: readable on the draft, but writing to it throws cleanly', () => {
-    const cart$ = atom('cart', { total: 10 })
-    const settings$ = atom('settings', { taxRate: 0.1 })
+    const cart = atom('cart', { total: 10 })
+    const settings = atom('settings', { taxRate: 0.1 })
 
     const applyTax = update('cart/applyTax',
-      { writes: { cart: cart$ }, reads: { settings: settings$ } },
+      { writes: { cart: cart }, reads: { settings: settings } },
       (d) => { d.cart.total = d.cart.total * (1 + d.settings.taxRate) })
     applyTax()
-    expect(cart$.total.peek()).toBeCloseTo(11)
+    expect(cart.total.peek()).toBeCloseTo(11)
 
     const corrupt = update('cart/corrupt',
-      { writes: { cart: cart$ }, reads: { settings: settings$ } },
+      { writes: { cart: cart }, reads: { settings: settings } },
       (d) => { d.settings.taxRate = 0.5 })
     expect(() => corrupt()).toThrow(/wrote to 'settings'/)
-    expect(settings$.taxRate.peek()).toBe(0.1)   // untouched
+    expect(settings.taxRate.peek()).toBe(0.1)   // untouched
   })
 })
 

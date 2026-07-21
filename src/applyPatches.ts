@@ -8,8 +8,8 @@ enablePatches()
 type PathKey = string | number
 
 /** Walk a Legend observable to the node at `path`. */
-export function nodeAt(root$: any, path: readonly PathKey[]): any {
-  let node = root$
+export function nodeAt(root: any, path: readonly PathKey[]): any {
+  let node = root
   for (const key of path) node = node[key]
   return node
 }
@@ -44,7 +44,7 @@ export interface ApplyPatchesOptions {
  * callers like the undo recipe; update() always passes a resolver).
  */
 export function applyPatches(
-  root$: any,
+  root: any,
   patches: readonly Patch[],
   resolve?: PathResolver,
   options?: ApplyPatchesOptions,
@@ -54,47 +54,47 @@ export function applyPatches(
 
     if (path.length === 0) {
       // whole-value replacement (recipe returned a new root or reassigned everything)
-      if (op === 'remove') root$.delete()
-      else root$.set(patch.value)
+      if (op === 'remove') root.delete()
+      else root.set(patch.value)
       continue
     }
 
     const parentPath = path.slice(0, -1)
     const key = path[path.length - 1] as PathKey
-    const parent$ = nodeAt(root$, parentPath)
-    const parentValue = resolve ? resolve(parentPath) : parent$.peek()
+    const parent = nodeAt(root, parentPath)
+    const parentValue = resolve ? resolve(parentPath) : parent.peek()
 
     if (Array.isArray(parentValue)) {
       if (key === 'length') {
         // Immer emits `replace` on length for truncation
-        parent$.set(parentValue.slice(0, patch.value as number))
+        parent.set(parentValue.slice(0, patch.value as number))
         continue
       }
       const index = key as number
       if (op === 'add') {
         if (options?.fastAppends && index >= parentValue.length) {
           // opt-in append fast path — in place, keeps the array's identity
-          parent$.push(patch.value)
+          parent.push(patch.value)
         } else {
           // JSON-patch add on an array index means INSERT, not overwrite
           // (append when index === length); replacing the array gives the
           // structural change a fresh identity
           const next = parentValue.slice()
           next.splice(index, 0, patch.value)
-          parent$.set(next)
+          parent.set(next)
         }
       } else if (op === 'remove') {
         const next = parentValue.slice()
         next.splice(index, 1)
-        parent$.set(next)
+        parent.set(next)
       } else {
-        parent$[index].set(patch.value)
+        parent[index].set(patch.value)
       }
       continue
     }
 
     // object parent
-    if (op === 'remove') parent$[key].delete()
-    else parent$[key].set(patch.value)
+    if (op === 'remove') parent[key].delete()
+    else parent[key].set(patch.value)
   }
 }

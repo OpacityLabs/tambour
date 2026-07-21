@@ -10,17 +10,17 @@ const envelope = (data: unknown, v = 1) => JSON.stringify({ v, data })
 describe('persistence: sync storage (MMKV-style)', () => {
   it('hydrates synchronously at registration — no flash of initial state', () => {
     const storage = memoryStorage({ cart: envelope({ items: ['stored'], total: 5 }) })
-    const cart$ = atom('cart', { items: [] as string[], total: 0 }, { persist: { storage } })
+    const cart = atom('cart', { items: [] as string[], total: 0 }, { persist: { storage } })
 
-    expect(cart$.peek()).toEqual({ items: ['stored'], total: 5 })   // already hydrated
-    expect(hydrationOf(cart$).peek()).toBe(true)
+    expect(cart.peek()).toEqual({ items: ['stored'], total: 5 })   // already hydrated
+    expect(hydrationOf(cart).peek()).toBe(true)
   })
 
   it('missing stored value: initial state, hydrated immediately', () => {
     const storage = memoryStorage()
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage } })
-    expect(cart$.peek()).toEqual({ total: 0 })
-    expect(hydrationOf(cart$).peek()).toBe(true)
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })
+    expect(cart.peek()).toEqual({ total: 0 })
+    expect(hydrationOf(cart).peek()).toBe(true)
   })
 
   it('missing stored value: materializes the initial value to storage immediately', () => {
@@ -37,8 +37,8 @@ describe('persistence: sync storage (MMKV-style)', () => {
 
   it('writes through on every update, one write per batch', () => {
     const storage = memoryStorage()
-    const cart$ = atom('cart', { items: [] as string[], total: 0 }, { persist: { storage } })
-    const add = update('cart/add', { cart: cart$ }, (d, item: string) => {
+    const cart = atom('cart', { items: [] as string[], total: 0 }, { persist: { storage } })
+    const add = update('cart/add', { cart: cart }, (d, item: string) => {
       d.cart.items.push(item)
       d.cart.total += 1
     })
@@ -51,31 +51,31 @@ describe('persistence: sync storage (MMKV-style)', () => {
   })
 
   it('unpersisted atoms are always hydrated and never touch storage', () => {
-    const session$ = atom('session', { active: false })
-    expect(hydrationOf(session$).peek()).toBe(true)
+    const session = atom('session', { active: false })
+    expect(hydrationOf(session).peek()).toBe(true)
   })
 
   it('resetAll persists the initial value', () => {
     const storage = memoryStorage({ cart: envelope({ total: 9 }) })
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage } })
-    expect(cart$.total.peek()).toBe(9)
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })
+    expect(cart.total.peek()).toBe(9)
 
     resetAll()
-    expect(cart$.total.peek()).toBe(0)
+    expect(cart.total.peek()).toBe(0)
     expect(JSON.parse(storage.data.get('cart')!).data).toEqual({ total: 0 })
   })
 
   it('custom key overrides the atom name', () => {
     const storage = memoryStorage({ 'v2:cart': envelope({ total: 3 }) })
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage, key: 'v2:cart' } })
-    expect(cart$.total.peek()).toBe(3)
+    const cart = atom('cart', { total: 0 }, { persist: { storage, key: 'v2:cart' } })
+    expect(cart.total.peek()).toBe(3)
   })
 })
 
 describe('persistence: migrations', () => {
   it('replays stepwise migrations from the stored version', () => {
     const storage = memoryStorage({ cart: envelope({ total: 10 }, 1) })
-    const cart$ = atom('cart', { total: 0, coupon: null as string | null, currency: 'USD' }, {
+    const cart = atom('cart', { total: 0, coupon: null as string | null, currency: 'USD' }, {
       persist: {
         storage,
         version: 3,
@@ -85,7 +85,7 @@ describe('persistence: migrations', () => {
         },
       },
     })
-    expect(cart$.peek()).toEqual({ total: 10, coupon: null, currency: 'USD' })
+    expect(cart.peek()).toEqual({ total: 10, coupon: null, currency: 'USD' })
   })
 
   it('data already at the current version runs no migrations', () => {
@@ -99,10 +99,10 @@ describe('persistence: migrations', () => {
 
   it('subsequent writes are stamped with the current version', () => {
     const storage = memoryStorage({ cart: envelope({ total: 10 }, 1) })
-    const cart$ = atom('cart', { total: 0 }, {
+    const cart = atom('cart', { total: 0 }, {
       persist: { storage, version: 2, migrations: { 2: (d: any) => d } },
     })
-    const bump = update('cart/bump', { cart: cart$ }, d => { d.cart.total += 1 })
+    const bump = update('cart/bump', { cart: cart }, d => { d.cart.total += 1 })
     bump()
     expect(JSON.parse(storage.data.get('cart')!).v).toBe(2)
   })
@@ -112,8 +112,8 @@ describe('persistence: throttled write-through', () => {
   it('first change after a quiet period writes immediately (leading edge)', () => {
     vi.useFakeTimers()
     const storage = memoryStorage()
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
-    const bump = update('cart/bump', { cart: cart$ }, d => { d.cart.total += 1 })
+    const cart = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
+    const bump = update('cart/bump', { cart: cart }, d => { d.cart.total += 1 })
 
     bump()
     expect(JSON.parse(storage.data.get('cart')!).data).toEqual({ total: 1 })
@@ -124,8 +124,8 @@ describe('persistence: throttled write-through', () => {
     vi.useFakeTimers()
     const storage = memoryStorage()
     const setString = vi.spyOn(storage, 'setString')
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
-    const bump = update('cart/bump', { cart: cart$ }, d => { d.cart.total += 1 })
+    const cart = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
+    const bump = update('cart/bump', { cart: cart }, d => { d.cart.total += 1 })
     setString.mockClear()               // ignore the initial materialization write
 
     bump()                              // leading
@@ -143,8 +143,8 @@ describe('persistence: throttled write-through', () => {
   it('after the window passes quietly, the next change is leading again', () => {
     vi.useFakeTimers()
     const storage = memoryStorage()
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
-    const bump = update('cart/bump', { cart: cart$ }, d => { d.cart.total += 1 })
+    const cart = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
+    const bump = update('cart/bump', { cart: cart }, d => { d.cart.total += 1 })
 
     bump()
     vi.advanceTimersByTime(600)
@@ -167,23 +167,23 @@ describe('persistence: throttled write-through', () => {
 describe('persistence: async storage', () => {
   it('starts at initial, flips hydration when the read resolves', async () => {
     const storage = asyncStorage(memoryStorage({ cart: envelope({ total: 42 }) }))
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage } })
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })
 
-    expect(cart$.total.peek()).toBe(0)                 // not yet hydrated
-    expect(hydrationOf(cart$).peek()).toBe(false)
+    expect(cart.total.peek()).toBe(0)                 // not yet hydrated
+    expect(hydrationOf(cart).peek()).toBe(false)
 
     await hydrated()                                   // the PersistGate replacement
-    expect(cart$.total.peek()).toBe(42)
-    expect(hydrationOf(cart$).peek()).toBe(true)
+    expect(cart.total.peek()).toBe(42)
+    expect(hydrationOf(cart).peek()).toBe(true)
   })
 
   it('hydrated() aggregates multiple persisted atoms', async () => {
     const s = memoryStorage({ a: envelope({ v: 1 }), b: envelope({ v: 2 }) })
-    const a$ = atom('a', { v: 0 }, { persist: { storage: asyncStorage(s) } })
-    const b$ = atom('b', { v: 0 }, { persist: { storage: asyncStorage(s) } })
+    const a = atom('a', { v: 0 }, { persist: { storage: asyncStorage(s) } })
+    const b = atom('b', { v: 0 }, { persist: { storage: asyncStorage(s) } })
     await hydrated()
-    expect(a$.v.peek()).toBe(1)
-    expect(b$.v.peek()).toBe(2)
+    expect(a.v.peek()).toBe(1)
+    expect(b.v.peek()).toBe(2)
   })
 })
 
@@ -191,10 +191,10 @@ describe('persistence: failure modes', () => {
   it('corrupted JSON: keeps initial state, still reports hydrated', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const storage = memoryStorage({ cart: '{not json' })
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage } })
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })
 
-    expect(cart$.total.peek()).toBe(0)
-    expect(hydrationOf(cart$).peek()).toBe(true)       // app is not blocked
+    expect(cart.total.peek()).toBe(0)
+    expect(hydrationOf(cart).peek()).toBe(true)       // app is not blocked
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('hydrate'), expect.anything())
     spy.mockRestore()
   })
@@ -206,10 +206,10 @@ describe('persistence: failure modes', () => {
       setString: () => {},
       remove: () => {},
     }
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage } })
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })
     await hydrated()
-    expect(cart$.total.peek()).toBe(0)
-    expect(hydrationOf(cart$).peek()).toBe(true)
+    expect(cart.total.peek()).toBe(0)
+    expect(hydrationOf(cart).peek()).toBe(true)
     spy.mockRestore()
   })
 })

@@ -19,7 +19,7 @@ export interface AtomOptions {
 
 interface RegistryEntry {
   name: string
-  node$: any
+  node: any
   initial: unknown
   persist?: PersistHandle
   fastAppends?: boolean
@@ -27,7 +27,7 @@ interface RegistryEntry {
 
 const registry = new Map<string, RegistryEntry>()
 const byNode = new WeakMap<object, RegistryEntry>()
-const ALWAYS_HYDRATED$ = observable(true)
+const ALWAYS_HYDRATED = observable(true)
 
 /**
  * Register a named root state node. The name is a real registration: devtools
@@ -42,24 +42,24 @@ export function atom<T>(name: string, initial: T, options?: AtomOptions): Atom<T
       `in tests, call clearRegistry() between cases.`,
     )
   }
-  const node$ = observable(structuredClone(initial))
-  const entry: RegistryEntry = { name, node$, initial: structuredClone(initial) }
+  const node = observable(structuredClone(initial))
+  const entry: RegistryEntry = { name, node, initial: structuredClone(initial) }
   if (options?.fastAppends) entry.fastAppends = true
   if (options?.persist) {
-    entry.persist = persistAtom(node$, name, options.persist)
+    entry.persist = persistAtom(node, name, options.persist)
   }
   registry.set(name, entry)
-  byNode.set(node$, entry)
-  return node$ as unknown as Atom<T>
+  byNode.set(node, entry)
+  return node as unknown as Atom<T>
 }
 
 /** Hydration status node for an atom — always `true` for unpersisted atoms
- *  and for sync storage (MMKV). A function accessor rather than the spec's
- *  original `cart$.hydrated$` because attaching properties to a Legend proxy
- *  would create a state child named `hydrated$`. */
-export function hydrationOf(atom$: Atom<any>): ReadonlyNode<boolean> {
-  const entry = byNode.get(atom$ as unknown as object)
-  return (entry?.persist?.hydrated$ ?? ALWAYS_HYDRATED$) as ReadonlyNode<boolean>
+ *  and for sync storage (MMKV). A function accessor rather than a `hydrated`
+ *  property on the atom (the spec's original design) because attaching
+ *  properties to a Legend proxy would create a state child of that name. */
+export function hydrationOf(target: Atom<any>): ReadonlyNode<boolean> {
+  const entry = byNode.get(target as unknown as object)
+  return (entry?.persist?.hydrated ?? ALWAYS_HYDRATED) as ReadonlyNode<boolean>
 }
 
 /** Resolves when every persisted atom registered SO FAR has hydrated.
@@ -74,15 +74,15 @@ export function hydrated(): Promise<void> {
 
 /** Internal/devtools: the writable node for a registered atom. */
 export function getAtomNode(name: string): unknown {
-  return registry.get(name)?.node$
+  return registry.get(name)?.node
 }
 
 /** Internal: whether a write-scope node is an atom registered with
  *  `fastAppends`. Child-node scopes resolve false by design — scoped updates
  *  can't be traced to their owning atom without reaching into Legend
  *  internals, so they take the safe (identity-fresh) append path. */
-export function fastAppendsFor(node$: object): boolean {
-  return byNode.get(node$)?.fastAppends === true
+export function fastAppendsFor(node: object): boolean {
+  return byNode.get(node)?.fastAppends === true
 }
 
 export function atomNames(): string[] {
@@ -93,8 +93,8 @@ export function atomNames(): string[] {
  *  nothing else — interceptors and registrations survive. */
 export function resetAll(): void {
   batch(() => {
-    for (const { node$, initial } of registry.values()) {
-      node$.set(structuredClone(initial))
+    for (const { node, initial } of registry.values()) {
+      node.set(structuredClone(initial))
     }
   })
 }
@@ -102,8 +102,8 @@ export function resetAll(): void {
 /** Deep-cloned view of all atom values, keyed by atom name. */
 export function snapshot(): Record<string, unknown> {
   const snap: Record<string, unknown> = {}
-  for (const { name, node$ } of registry.values()) {
-    snap[name] = structuredClone(node$.peek())
+  for (const { name, node } of registry.values()) {
+    snap[name] = structuredClone(node.peek())
   }
   return snap
 }
@@ -114,7 +114,7 @@ export function restore(snap: Record<string, unknown>): void {
   batch(() => {
     for (const [name, value] of Object.entries(snap)) {
       const entry = registry.get(name)
-      if (entry) entry.node$.set(structuredClone(value))
+      if (entry) entry.node.set(structuredClone(value))
     }
   })
 }

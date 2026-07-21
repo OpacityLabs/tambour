@@ -15,7 +15,7 @@ different axes. Redux adds a third:
 
 | Axis | Technology | What it controls |
 |---|---|---|
-| **Where** | Legend State | Spatial granularity — per-node subscriptions; only the component reading `cart$.total` re-renders |
+| **Where** | Legend State | Spatial granularity — per-node subscriptions; only the component reading `cart.total` re-renders |
 | **When** | RxJS | Temporal granularity — which *moments* propagate (gating, debouncing, joining, distinctness) |
 | **What** | Redux (as discipline) | Which transitions are legal, named, and auditable |
 
@@ -39,7 +39,7 @@ Legend's observable tree, without giving up its performance.
 Plus two symmetric bridges — one idea ("anything can become a stream"), two functions:
 
 ```ts
-atomToStream(cart$.total)      // state node          → Observable<number>
+atomToStream(cart.total)      // state node          → Observable<number>
 eventToStream(searchInput)     // event / streamEvent → Observable<string> (payloads)
 ```
 
@@ -48,7 +48,7 @@ eventToStream(searchInput)     // event / streamEvent → Observable<string> (pa
 ## Atoms
 
 ```ts
-export const cart$ = atom('cart', { items: [] as Item[], total: 0, coupon: null })
+export const cart = atom('cart', { items: [] as Item[], total: 0, coupon: null })
 ```
 
 The name is a real registration, not a comment: it is the devtools identity, the
@@ -59,7 +59,7 @@ Every node underneath is independently observable — the atom is the unit of
 ### Persistence: the atom IS the boundary
 
 ```ts
-export const cart$ = atom('cart', initial, {
+export const cart = atom('cart', initial, {
   persist: {
     storage: mmkvStorage,        // MMKV on RN (sync!), IndexedDB/localStorage on web
     version: 3,
@@ -82,9 +82,9 @@ export const cart$ = atom('cart', initial, {
 ### Hydration
 
 Async storage means an atom starts at its initial value and may be overwritten a
-tick later. Hydration status is exposed via `hydrationOf(cart$)` (an observable —
-`use$` it) and `await hydrated()` gates the app (the PersistGate replacement).
-(Originally spec'd as `cart$.hydrated$`; changed to an accessor because
+tick later. Hydration status is exposed via `hydrationOf(cart)` (an observable —
+`useValue` it) and `await hydrated()` gates the app (the PersistGate replacement).
+(Originally spec'd as `cart.hydrated`; changed to an accessor because
 attaching properties to a Legend proxy would create a state child.) On RN,
 prefer MMKV: hydration is synchronous and this concern disappears — verified:
 with sync storage the atom is hydrated before `atom()` returns.
@@ -119,15 +119,15 @@ Test helper only — a live subscriber's node detaches from the cache.
 stream selectors), then a combiner that receives **plain values**:
 
 ```ts
-export const visibleTodos$ = selector(
-  todos$.items, todoUi$.filter,
+export const visibleTodos = selector(
+  todos.items, todoUi.filter,
   (items, filter) =>
     filter === 'all' ? items : items.filter(t => (filter === 'done') === t.done)
 )
 
 // composes: selectors as deps of selectors
-export const overdueCount$ = selector(
-  visibleTodos$, clock$.today,
+export const overdueCount = selector(
+  visibleTodos, clock.today,
   (todos, today) => todos.filter(t => t.due && t.due < today).length
 )
 ```
@@ -144,25 +144,25 @@ Backed by Legend computeds: lazy, glitch-free within a batch.
 - **Types flow honestly through deps**: a `default`-less stream selector dep is
   `T | undefined` in the combiner's parameter — "not loaded yet" stays visible in
   the types.
-- **Most reads need no selector at all.** `use$(cart$.items[3].name)` is already
+- **Most reads need no selector at all.** `useValue(cart.items[3].name)` is already
   maximally targeted — Legend's granularity does the work. Selectors exist for
   *derivations* (computed values, joins), not access paths. Expect a handful per
   domain, not Redux's wall of them.
-- **React Compiler apps MUST use `useValue`, the compiler-safe alias of
-  `use$`** (found on-device 2026-07-17: the compiler and
-  eslint-plugin-react-hooks detect hooks by /^use[A-Z0-9]/ — `$` fails, so
-  components calling `use$` get memoized AROUND the call, hooks get skipped
+- **The read hook is `useValue` — deliberately NOT Legend's `use$` name**
+  (found on-device 2026-07-17: the compiler and eslint-plugin-react-hooks
+  detect hooks by /^use[A-Z0-9]/ — `$` fails, so components calling a
+  `use$`-named hook get memoized AROUND the call, hooks get skipped
   on re-render, and every screen crashes with hook-order errors at runtime.
   Headless bundles and non-React tests cannot catch it; the opacity gate
-  pass did). Same function, exported from `tambour/react`; any
-  /^use[A-Z0-9]/ import alias also works.
+  pass did). `use$` is no longer exported; see NAMING.md for the
+  convention this decided.
 - **Families** are a factory (reselect-factory / Recoil style), with a keyed cache:
 
   ```ts
   export const todoById = selectorFamily((id: string) =>
-    selector(todos$.items, items => items.find(t => t.id === id))
+    selector(todos.items, items => items.find(t => t.id === id))
   )
-  const todo = use$(todoById(id))   // same args → same cached node
+  const todo = useValue(todoById(id))   // same args → same cached node
   ```
 
   Entries evict by refCount when the last observer unsubscribes (with a short
@@ -180,7 +180,7 @@ systems that require values to be present. A stream selector is a node that simp
 *hasn't emitted yet*; emissions suppressed by the pipeline never touch React at all.
 
 ```ts
-export const searchResults$ = streamSelector(
+export const searchResults = streamSelector(
   eventToStream(searchInput).pipe(
     debounceTime(200),
     distinctUntilChanged(),
@@ -203,14 +203,14 @@ Contract:
   path *merges* keyed arrays — a shrinking emission (`[a,b,c,d] → [d]`) would
   corrupt the node to `[d,b,c,d]`. streamSelector pins `mode: 'set'`
   (found via the showcase app; regression in test/streamSelector.test.ts).
-- Components consume it with the same `use$` as everything else — call sites never
+- Components consume it with the same `useValue` as everything else — call sites never
   know whether a value is sync or temporal.
 
 ### The glitch rule
 
-RxJS is not glitch-free: one `update()` writing `a$` and `b$` in a single batch
-fires *separate* `onChange` events, so `combineLatest([atomToStream(a$),
-atomToStream(b$)])` emits a torn intermediate.
+RxJS is not glitch-free: one `update()` writing `a` and `b` in a single batch
+fires *separate* `onChange` events, so `combineLatest([atomToStream(a),
+atomToStream(b)])` emits a torn intermediate.
 
 **Combine in space with Legend, combine in time with Rx.** Join multiple atoms in a
 synchronous `selector` (glitch-free via batching), then wrap that one node in a
@@ -235,8 +235,8 @@ export const libraryBooks = query('library/books',
   { staleTime: 15_000, gcTime: 60_000, default: [] as Book[] })
 
 // the node's value IS the result envelope — data and metadata travel together
-const { data, pending } = use$(libraryBooks('austen'))  // observe = fetch if stale
-const books = use$(libraryBooks('austen').data)         // data-only subscription
+const { data, pending } = useValue(libraryBooks('austen'))  // observe = fetch if stale
+const books = useValue(libraryBooks('austen').data)         // data-only subscription
 invalidate(libraryBooks)                                // or invalidate(libraryBooks(args))
 ```
 
@@ -259,7 +259,7 @@ invalidate(libraryBooks)                                // or invalidate(library
   observation; `stale` is the synchronous "not yet trustworthy" signal.
 - **The envelope is the API**: a query node's value is `{ data, pending,
   stale, error, fetchedAt }`. Legend's granularity makes it free —
-  `use$(node.data)` never re-renders on a `fetchedAt` bump — and because data
+  `useValue(node.data)` never re-renders on a `fetchedAt` bump — and because data
   and status are ONE node written in ONE batch, a torn frame (fresh data +
   `pending: true`) is structurally impossible. Refetches apply structural
   sharing (deep-equal payloads keep old references → zero data notifications).
@@ -287,7 +287,7 @@ invalidate(libraryBooks)                                // or invalidate(library
   at the call site naming the query and the exact path. Accepted JSON
   equivalences: `{ a: undefined }` ≡ `{}`, array `undefined` ≡ `null`.
   Re-calling `family(args)` per render is the intended pattern (~µs hash →
-  same node → stable use$ subscription); hot paths hoist the call into a
+  same node → stable useValue subscription); hot paths hoist the call into a
   selector.
 - **Open items before freeze**: query-side fetch retry (the event
   retry/timeout vocabulary exists — see Events — and would wire into the
@@ -311,7 +311,7 @@ export const renameTodo = mutation('todos/rename',
   async (id: string, title: string) => { await api.renameTodo(id, title) },
   { invalidates: ([id]) => [todoList, todoDetail(id)] })
 
-const { pending, success, error } = use$(renameTodo.status)  // carried metadata
+const { pending, success, error } = useValue(renameTodo.status)  // carried metadata
 await renameTodo('t1', 'buy milk')                           // plain typed async
 ```
 
@@ -388,7 +388,7 @@ address** (`checkout/complete` may exist with no checkout atom).
 // checkout.updates.ts
 export const completeCheckout = update(
   'checkout/complete',
-  { cart: cart$, orders: orders$, user: user$ },      // declared write scope
+  { cart: cart, orders: orders, user: user },      // declared write scope
   (d, payment: Payment) => {
     d.orders.list.push(makeOrder(d.cart.items, payment))
     d.cart.items = []
@@ -408,14 +408,14 @@ completeCheckout(payment)   // one call, atomic across all three atoms
 - **Payloads are recipe arguments** (multiple args allowed, tuple-inferred by TS —
   better than RTK's single `action.payload`).
 - **Read-only participants**: `update(name, { writes: {...}, reads: { settings:
-  settings$ } }, recipe)` — reads arrive as plain snapshots; no accidental writes,
+  settings } }, recipe)` — reads arrive as plain snapshots; no accidental writes,
   no needless proxying, truthful log.
 - **Declared scope is tooling**: the log records `completeCheckout → wrote cart,
-  orders, user`; "what can write to `orders$`?" is a grep across `*.updates.ts`.
+  orders, user`; "what can write to `orders`?" is a grep across `*.updates.ts`.
 
 ### Mechanics: Immer patches → targeted sets
 
-Build a composite snapshot `{ cart: cart$.peek(), ... }`, run `produceWithPatches`,
+Build a composite snapshot `{ cart: cart.peek(), ... }`, run `produceWithPatches`,
 route each patch by `path[0]` to its atom, apply everything in one `batch()`. Legend
 never sees the discarded `next` — updates stay surgical per-leaf; inverse patches
 come free.
@@ -458,7 +458,7 @@ Known implementation requirements (validated in Phase 0):
   neighbor; a spent thunk warns and no-ops. This is the optimistic-update
   primitive (see Mutations).
 - **Hot-path escape hatch**: Immer proxying is a per-frame tax at 60fps.
-  Scoped updates (`update(name, { node: cart$.items[3] }, recipe)`) proxy only the
+  Scoped updates (`update(name, { node: cart.items[3] }, recipe)`) proxy only the
   subtree; `updateDirect` (raw batched sets, still named and logged) exists for
   drag/scroll/animation paths. Benchmark decides how loudly docs push this.
 - **Drafts are proxies — deep-equality helpers throw on them.** lodash
@@ -559,7 +559,7 @@ make it an event; a one-line UI handler calling a single update needs no wrapper
 export const searchInput = streamEvent<string>('search/input')
 searchInput('groc')      // fires the payload; returns void — nothing to await
 
-export const searchResults$ = streamSelector(
+export const searchResults = streamSelector(
   eventToStream(searchInput).pipe(debounceTime(200), switchMap(q => from(api.search(q)))),
 )
 ```
@@ -612,9 +612,9 @@ awaited by its caller *and* observed by a pipeline, neither knowing about the ot
 Same shape as selectors — n deps, then a react function receiving plain values:
 
 ```ts
-const overLimit$ = selector(cart$.total, t => t > 100)
+const overLimit = selector(cart.total, t => t > 100)
 
-reaction('cart/freeShipping', overLimit$, over => {
+reaction('cart/freeShipping', overLimit, over => {
   if (over) applyFreeShipping()          // an update, an event fire, or a noop
 }, { immediate: true })
 ```
@@ -671,8 +671,12 @@ checkout.events.ts    // event('checkout/...') — may exist with no checkout at
 checkout.updates.ts
 ```
 
-Lintable conventions: name prefix matches filename; "what writes to `orders$`?" is a
+Lintable conventions: name prefix matches filename; "what writes to `orders`?" is a
 grep across `*.updates.ts` write scopes.
+
+Identifier naming (nouns are state, verbs are actions, no `$` suffix on nodes —
+`$` is reserved for raw RxJS observables) is specified in NAMING.md, including
+the migration recipe for codebases written against the old `$` convention.
 
 ## Devtools
 
@@ -689,8 +693,9 @@ so devtools is *an interceptor that forwards to a UI*:
 
 ## Packaging
 
-Monorepo: `@tambour/state` (core), `@tambour/state-react` (thin: re-exports
-Legend's `use$`/`observer`, hydration gate, MMKV adapter), `@tambour/state-devtools`.
+Monorepo: `@tambour/state` (core), `@tambour/state-react` (thin: wraps Legend's
+`use$` as `useValue`, re-exports `observer`, hydration gate, MMKV adapter),
+`@tambour/state-devtools`.
 
 - `@legendapp/state` and `rxjs` are **peer dependencies** of core.
 - `streamSelector` accepts anything Observable-shaped (`Symbol.observable` interop) —
