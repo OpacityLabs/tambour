@@ -11,6 +11,10 @@ import type { ReadonlyNode } from './types'
  *
  *   - pull-based: OBSERVING a key is what fetches it (if missing or stale);
  *     nothing is ever "kicked off" imperatively
+ *   - handles are inert: family(args) and its child paths (.data, .pending)
+ *     are lazy references that never touch the entry — a module-level
+ *     selector(q(args).data, ...) declaration cannot fetch; only
+ *     get/peek/onChange resolve (and, when observed, activate) the entry
  *   - dedupe by construction: same args → same node → one in-flight request
  *   - stale-while-revalidate: a cached value is served synchronously; a stale
  *     one additionally refetches in the background
@@ -71,7 +75,7 @@ export interface QueryResult<T> {
 
 interface Entry {
   store$: any // observable<QueryResult> — one tree, so data+status can't tear
-  node$: any // public node: synced wrapper providing the activation lifecycle
+  node$: any // synced wrapper providing the activation lifecycle; public access goes through a lazyNode handle
   active: boolean
   inFlight: boolean
   invalidated: boolean // invalidated mid-flight → refetch on settle
@@ -79,12 +83,60 @@ interface Entry {
   fetch: () => void
 }
 
-const NODE_ENTRY = new WeakMap<object, Entry>()
-const FAMILY_ENTRIES = new WeakMap<object, Map<string, Entry>>()
+interface FamilyRegistry {
+  cache: Map<string, Entry>
+  nodes: Map<string, object> // one lazy handle per key, evicted with its entry
+}
+
+const NODE_REF = new WeakMap<object, { cache: Map<string, Entry>; key: string }>()
+const FAMILY_ENTRIES = new WeakMap<object, FamilyRegistry>()
 // Iterable registry for resetQueries(). Strong references are fine: query
 // families are module-level singletons — they never GC in real programs, and
 // the test processes this exists for are short-lived anyway.
-const ALL_FAMILY_CACHES = new Set<Map<string, Entry>>()
+const ALL_FAMILIES = new Set<FamilyRegistry>()
+
+/**
+ * The public node is a lazy handle, not the synced observable itself. Legend
+ * materializes a lazy synced parent on ANY property access (creating a child
+ * node peeks the parent, and peeking activates: subscribe, fetch, the works),
+ * so handing out the raw node meant `selector(q(args).data, ...)` at module
+ * scope fetched at import time — and the momentary activation's unsubscribe
+ * started the gc clock on a never-observed entry.
+ *
+ * The handle defers everything: property access builds more handles (identity-
+ * stable via the children map), and only get/peek/onChange walk to the real
+ * node. The walk re-resolves the entry through the family cache every time, so
+ * a handle captured at module scope survives eviction — the next observation
+ * rebuilds a virgin entry IN the cache, where invalidate(family) can see it,
+ * instead of stranding an orphan that invalidation silently misses.
+ *
+ * Trade-offs (deliberate): a query node is a tambour node surface, not a raw
+ * Legend observable — selector deps, use$/useValue, and onChange all route
+ * through get()/onChange() and work unchanged, but passing one DIRECTLY to a
+ * Legend API that wants an observable (Memo, raw Legend use$) is unsupported.
+ * Envelope fields shadowed by Object.prototype names ('toString', 'valueOf')
+ * are unreachable as child handles.
+ */
+function lazyNode(resolveRoot: () => any, path: string[] = []): any {
+  const children = new Map<string, any>()
+  const walk = () => path.reduce((node, key) => node[key], resolveRoot())
+  const surface = {
+    get: () => walk().get(),
+    peek: () => walk().peek(),
+    onChange: (cb: (e: { value: unknown }) => void) => walk().onChange(cb),
+  }
+  return new Proxy(surface, {
+    get(target, prop) {
+      if (typeof prop === 'symbol' || prop in target) return (target as any)[prop]
+      let child = children.get(prop)
+      if (!child) {
+        child = lazyNode(resolveRoot, [...path, prop])
+        children.set(prop, child)
+      }
+      return child
+    },
+  })
+}
 
 export function query<Args extends unknown[], T>(
   name: string,
@@ -104,11 +156,11 @@ export function query<Args extends unknown[], T>(
   const staleTime = options?.staleTime ?? 0
   const gcTime = options?.gcTime ?? 5 * 60_000
   const cache = new Map<string, Entry>()
+  const nodes = new Map<string, object>()
 
-  const family = (...args: Args): ReadonlyNode<QueryResult<T | undefined>> => {
-    const key = stableArgsKey(name, args)
+  const entryFor = (key: string, args: Args): Entry => {
     const hit = cache.get(key)
-    if (hit) return hit.node$
+    if (hit) return hit
 
     const store$ = observable({
       data: options?.default as T | undefined,
@@ -198,20 +250,33 @@ export function query<Args extends unknown[], T>(
           queueMicrotask(revalidateIfStale)
           return () => {
             entry.active = false
-            entry.evictTimer = setTimeout(() => cache.delete(key), gcTime)
+            entry.evictTimer = setTimeout(() => {
+              cache.delete(key)
+              nodes.delete(key)
+            }, gcTime)
           }
         },
       }) as any,
     )
 
     cache.set(key, entry)
-    NODE_ENTRY.set(entry.node$, entry)
-    return entry.node$ as ReadonlyNode<QueryResult<T | undefined>>
+    return entry
+  }
+
+  const family = (...args: Args): ReadonlyNode<QueryResult<T | undefined>> => {
+    const key = stableArgsKey(name, args)
+    const hit = nodes.get(key)
+    if (hit) return hit as ReadonlyNode<QueryResult<T | undefined>>
+    const node: object = lazyNode(() => entryFor(key, args).node$)
+    nodes.set(key, node)
+    NODE_REF.set(node, { cache, key })
+    return node as ReadonlyNode<QueryResult<T | undefined>>
   }
 
   Object.defineProperty(family, 'name', { value: name })
-  FAMILY_ENTRIES.set(family, cache)
-  ALL_FAMILY_CACHES.add(cache)
+  const registry: FamilyRegistry = { cache, nodes }
+  FAMILY_ENTRIES.set(family, registry)
+  ALL_FAMILIES.add(registry)
   return family
 }
 
@@ -226,27 +291,29 @@ export function query<Args extends unknown[], T>(
  * only a VIRGIN key holds the default). Call this next to `resetAll()`
  * instead: every key starts virgin, no ordering constraints.
  *
- * Not for app code: a live subscriber keeps its node working (the entry
- * lives on in its closure) but the cache forgets it — the next
- * `family(args)` call builds a fresh entry, and the two never reconcile.
- * Between tests nothing is subscribed, which is the point.
+ * Not for app code: a handle held across the reset re-resolves — its next
+ * get/peek/onChange builds a fresh (virgin) entry through the family cache —
+ * but onChange subscriptions attached BEFORE the reset stay bound to the old
+ * entry and never see the new one's writes. Between tests nothing is
+ * subscribed, which is the point.
  */
 export function resetQueries(family?: object): void {
-  let caches: Iterable<Map<string, Entry>>
+  let families: Iterable<FamilyRegistry>
   if (family === undefined) {
-    caches = ALL_FAMILY_CACHES
+    families = ALL_FAMILIES
   } else {
-    const cache = FAMILY_ENTRIES.get(family)
-    if (!cache) {
+    const registry = FAMILY_ENTRIES.get(family)
+    if (!registry) {
       throw new Error('[tambour] resetQueries: not a query family')
     }
-    caches = [cache]
+    families = [registry]
   }
-  for (const cache of caches) {
+  for (const { cache, nodes } of families) {
     for (const entry of cache.values()) {
       if (entry.evictTimer) clearTimeout(entry.evictTimer)
     }
     cache.clear()
+    nodes.clear()
   }
 }
 
@@ -257,15 +324,18 @@ export function resetQueries(family?: object): void {
  * value and refetch on next observation.
  */
 export function invalidate(target: object): void {
-  const familyCache = FAMILY_ENTRIES.get(target)
-  const entries = familyCache
-    ? [...familyCache.values()]
-    : NODE_ENTRY.has(target)
-      ? [NODE_ENTRY.get(target)!]
-      : null
-  if (!entries) {
+  const registry = FAMILY_ENTRIES.get(target)
+  const ref = registry ? undefined : NODE_REF.get(target)
+  if (!registry && !ref) {
     throw new Error('[tambour] invalidate: not a query family or query node')
   }
+  // A handle whose entry evicted (or was never built) has nothing to mark:
+  // its next observation builds a virgin entry, which is stale by construction.
+  const entries = registry
+    ? [...registry.cache.values()]
+    : ref!.cache.has(ref!.key)
+      ? [ref!.cache.get(ref!.key)!]
+      : []
   for (const entry of entries) {
     entry.invalidated = true
     entry.store$.stale.set(true)

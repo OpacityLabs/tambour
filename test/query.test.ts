@@ -445,6 +445,93 @@ describe('the keepPrevious recipe (temporal gating, no new API)', () => {
   })
 })
 
+describe('query: handles are inert until observed', () => {
+  it('module-scope declaration of child-path selector deps never fetches; first observation does', async () => {
+    const { fetcher, calls } = controlledFetcher<string[]>()
+    const q = query('inert', fetcher, { staleTime: 60_000, default: [] as string[] })
+
+    // the app pattern: static deps declared at module scope, long before render
+    const visible$ = selector((q('k') as any).data, (rows: string[]) => rows.length) as any
+    await sleep(20)
+    expect(calls.length).toBe(0) // declaring a dep is NOT observing
+
+    const dispose = visible$.onChange(() => {})
+    visible$.get()
+    await tick()
+    expect(calls.length).toBe(1) // observation propagates to the entry and fetches
+    calls[0]!.resolve(['a', 'b'])
+    await tick()
+    expect(visible$.get()).toBe(2)
+    dispose()
+  })
+
+  it('a captured handle re-resolves after eviction — invalidate() finds the rebuilt entry', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('rebind', fetcher, { staleTime: 60_000, gcTime: 30, default: 0 })
+
+    const node$ = q('k') as any // captured once, like a module-level selector dep
+    let dispose = node$.onChange(() => {})
+    node$.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+    expect(node$.get().data).toBe(1)
+    dispose()
+
+    await sleep(80) // entry evicts; the handle survives
+
+    dispose = node$.onChange(() => {}) // old handle → fresh entry through the cache
+    expect(node$.get().data).toBe(0) // virgin again: cached value went with the entry
+    await tick()
+    expect(calls.length).toBe(2)
+    calls[1]!.resolve(2)
+    await tick()
+    expect(node$.get().data).toBe(2)
+
+    invalidate(node$) // the rebuilt entry is IN the cache — not a stranded orphan
+    await tick()
+    expect(calls.length).toBe(3)
+    calls[2]!.resolve(3)
+    await tick()
+    expect(node$.get().data).toBe(3)
+    dispose()
+  })
+
+  it('invalidate on an evicted handle is a harmless no-op (virgin entries are stale anyway)', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('inv-evicted', fetcher, { staleTime: 60_000, gcTime: 30, default: 0 })
+
+    const node$ = q('k') as any
+    let dispose = node$.onChange(() => {})
+    node$.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+    dispose()
+    await sleep(80) // evicted
+
+    invalidate(node$) // no entry behind the handle: must not throw, must not fetch
+    await sleep(20)
+    expect(calls.length).toBe(1)
+
+    dispose = node$.onChange(() => {})
+    node$.get()
+    await tick()
+    expect(calls.length).toBe(2) // virgin entry revalidates on observation as always
+    calls[1]!.resolve(2)
+    await tick()
+    expect(node$.get().data).toBe(2)
+    dispose()
+  })
+
+  it('handle identity is stable per key, including child paths', () => {
+    const q = query('ident', async (_key: string) => 0)
+    expect(q('a')).toBe(q('a'))
+    expect((q('a') as any).data).toBe((q('a') as any).data)
+    expect((q('a') as any).data).not.toBe((q('b') as any).data)
+  })
+})
+
 describe('resetQueries: the test-suite escape hatch', () => {
   it('drops every cached entry — a re-observed key is VIRGIN (default data, refetch)', async () => {
     const { fetcher, calls } = controlledFetcher<string>()
