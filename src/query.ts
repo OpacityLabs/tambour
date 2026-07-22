@@ -1,5 +1,12 @@
 import { batch, observable } from '@legendapp/state'
 import { synced } from '@legendapp/state/sync'
+import { currentOrigin } from './context'
+import {
+  runQueryFetch,
+  runQueryInvalidate,
+  runQuerySettle,
+  type QueryFetchReason,
+} from './interceptors'
 import type { ReadonlyNode } from './types'
 
 /**
@@ -80,15 +87,19 @@ interface Entry {
   inFlight: boolean
   invalidated: boolean // invalidated mid-flight → refetch on settle
   evictTimer: ReturnType<typeof setTimeout> | null
-  fetch: () => void
+  fetch: (reason: QueryFetchReason) => void
 }
 
 interface FamilyRegistry {
+  name: string
   cache: Map<string, Entry>
   nodes: Map<string, object> // one lazy handle per key, evicted with its entry
 }
 
-const NODE_REF = new WeakMap<object, { cache: Map<string, Entry>; key: string }>()
+const NODE_REF = new WeakMap<
+  object,
+  { cache: Map<string, Entry>; key: string; name: string; args: unknown[] }
+>()
 const FAMILY_ENTRIES = new WeakMap<object, FamilyRegistry>()
 // Iterable registry for resetQueries(). Strong references are fine: query
 // families are module-level singletons — they never GC in real programs, and
@@ -177,13 +188,14 @@ export function query<Args extends unknown[], T>(
       inFlight: false,
       invalidated: false,
       evictTimer: null,
-      fetch: () => doFetch(),
+      fetch: reason => doFetch(reason),
     }
 
-    const doFetch = (): void => {
+    const doFetch = (reason: QueryFetchReason): void => {
       if (entry.inFlight) return // dedupe: one request per key at a time
       entry.inFlight = true
       entry.invalidated = false
+      runQueryFetch(name, args, reason) // post-dedupe: every emission is a real request
       store.pending.set(true)
       fetcher(...args).then(
         result => {
@@ -200,6 +212,7 @@ export function query<Args extends unknown[], T>(
               fetchedAt: Date.now(),
             })
           })
+          runQuerySettle(name, args, undefined)
           settle()
         },
         error => {
@@ -208,13 +221,14 @@ export function query<Args extends unknown[], T>(
           batch(() => {
             store.assign({ pending: false, stale: true, error })
           })
+          runQuerySettle(name, args, error)
           settle()
         },
       )
     }
 
     const settle = (): void => {
-      if (entry.invalidated && entry.active) doFetch()
+      if (entry.invalidated && entry.active) doFetch('invalidate')
     }
 
     const revalidateIfStale = (): void => {
@@ -225,7 +239,10 @@ export function query<Args extends unknown[], T>(
         fetchedAt !== undefined &&
         Date.now() - fetchedAt <= staleTime &&
         store.error.peek() === undefined
-      if (!fresh) doFetch()
+      if (!fresh)
+        doFetch(
+          entry.invalidated ? 'invalidate' : fetchedAt === undefined ? 'activate' : 'stale',
+        )
     }
 
     entry.node = observable(
@@ -269,12 +286,12 @@ export function query<Args extends unknown[], T>(
     if (hit) return hit as ReadonlyNode<QueryResult<T | undefined>>
     const node: object = lazyNode(() => entryFor(key, args).node)
     nodes.set(key, node)
-    NODE_REF.set(node, { cache, key })
+    NODE_REF.set(node, { cache, key, name, args })
     return node as ReadonlyNode<QueryResult<T | undefined>>
   }
 
   Object.defineProperty(family, 'name', { value: name })
-  const registry: FamilyRegistry = { cache, nodes }
+  const registry: FamilyRegistry = { name, cache, nodes }
   FAMILY_ENTRIES.set(family, registry)
   ALL_FAMILIES.add(registry)
   return family
@@ -329,6 +346,13 @@ export function invalidate(target: object): void {
   if (!registry && !ref) {
     throw new Error('[tambour] invalidate: not a query family or query node')
   }
+  // Emitted for the CALL (even when nothing is cached — the intent is the
+  // timeline fact); origin ties a mutation-settle invalidation to its mutation.
+  runQueryInvalidate(
+    registry ? registry.name : ref!.name,
+    registry ? 'all' : ref!.args,
+    currentOrigin(),
+  )
   // A handle whose entry evicted (or was never built) has nothing to mark:
   // its next observation builds a virgin entry, which is stale by construction.
   const entries = registry
@@ -339,7 +363,7 @@ export function invalidate(target: object): void {
   for (const entry of entries) {
     entry.invalidated = true
     entry.store.stale.set(true)
-    if (entry.active && !entry.inFlight) entry.fetch()
+    if (entry.active && !entry.inFlight) entry.fetch('invalidate')
   }
 }
 

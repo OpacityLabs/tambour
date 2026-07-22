@@ -1,7 +1,7 @@
 import { batch, observable } from '@legendapp/state'
 import { Observable } from 'rxjs'
 import { currentOrigin, runWithOrigin } from './context'
-import { runEventError, runEventFire, runEventSettle } from './interceptors'
+import { runEventError, runEventFire, runEventSettle, type EventKind } from './interceptors'
 import type { ReadonlyNode } from './types'
 
 /** Observable in-flight status of a command event (its `.status` node). */
@@ -110,8 +110,8 @@ function makeInternals<F extends (...args: never[]) => unknown>(fn: F, name: str
   return fn as F & EventInternals
 }
 
-function notify(ev: EventInternals, args: unknown[]): void {
-  runEventFire(ev[EVENT_NAME], args)
+function notify(ev: EventInternals, args: unknown[], kind: EventKind): void {
+  runEventFire(ev[EVENT_NAME], args, kind)
   const payload = args.length <= 1 ? args[0] : args
   for (const l of ev[LISTENERS]) l(payload)
 }
@@ -170,7 +170,7 @@ export function event(
   const fire = (...args: unknown[]): Promise<unknown> => {
     if (concurrency === 'exhaust' && inFlight) return inFlight // coalesced: status untouched
 
-    notify(ev, args)
+    notify(ev, args, 'event')
 
     let handlerArgs = args
     if (concurrency === 'switch') {
@@ -223,7 +223,10 @@ export function event(
     const fireOnSettle = (superseded: boolean, error?: unknown): void => {
       if (!onSettle) return
       try {
-        onSettle(superseded, error, args)
+        // origin context so anything the settle hook triggers synchronously
+        // (a mutation's invalidations, and their timeline entries) is
+        // attributed to this event
+        runWithOrigin(name, () => onSettle(superseded, error, args))
       } catch (hookError) {
         runEventError(name, hookError, args) // e.g. a bad invalidation target
       }
@@ -269,7 +272,7 @@ export function event(
  */
 export function streamEvent<T = void>(name: string): StreamEvent<T> {
   const fire = (payload: T): void => {
-    notify(ev, [payload])
+    notify(ev, [payload], 'stream')
   }
   const ev = makeInternals(fire, name)
   return ev as StreamEvent<T>
