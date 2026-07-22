@@ -36,7 +36,7 @@ function controlledFetcher<T>() {
   return { fetcher, calls }
 }
 
-const quiet = { colors: false as const, timestamps: false }
+const quiet = { colors: false as const, timestamps: false, banner: false }
 
 describe('logInterceptor: updates', () => {
   it('prints the timeline line with args, scope, and patch-based diffs', () => {
@@ -121,7 +121,7 @@ describe('logInterceptor: event lifecycle', () => {
     await flush()
     dispose()
 
-    expect(lines[0]).toMatch(/^event\s+sync\/now$/)
+    expect(lines[0]).toMatch(/^event\s+sync\/now\s+…$/) // fire is marked unfinished
     expect(lines[1]).toMatch(/^event\s+sync\/now\s+✓ \d+ms$/)
   })
 
@@ -343,10 +343,24 @@ describe('logInterceptor: output modes', () => {
     const cart = atom('cart', { total: 0 })
     const set = update('cart/set', { cart }, (d, v: number) => { d.cart.total = v })
     const { sink, lines } = makeSink()
-    const dispose = logInterceptor({ colors: false, logger: sink })
+    const dispose = logInterceptor({ colors: false, banner: false, logger: sink })
     set(1)
     dispose()
     expect(lines[0]).toMatch(/\d{2}:\d{2}:\d{2}\.\d{3}$/)
+  })
+
+  it('prints the legend banner once at install; banner: false suppresses it', () => {
+    const shown = makeSink()
+    const d1 = logInterceptor({ colors: false, timestamps: false, logger: shown.sink })
+    d1()
+    expect(shown.lines).toHaveLength(1)
+    expect(shown.lines[0]).toContain('[tambour] timeline on')
+    expect(shown.lines[0]).toContain('… fired')
+
+    const hidden = makeSink()
+    const d2 = logInterceptor({ ...quiet, logger: hidden.sink })
+    d2()
+    expect(hidden.lines).toHaveLength(0)
   })
 })
 

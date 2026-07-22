@@ -59,6 +59,10 @@ export interface LogInterceptorOptions {
    *  browser's Verbose filter. Failed settles and reaction loops always use
    *  `error`. Default: 'debug' (falls back to `log` if the sink lacks it). */
   level?: 'debug' | 'log' | 'info'
+  /** One-time legend line at install teaching the glyph vocabulary
+   *  (… ✓ ✗ ⊘ ∅ ⇣ ←) — the timeline should be readable without folklore.
+   *  `false` suppresses. Default: true. */
+  banner?: boolean
   /** Secrets guard. Glob(s): matching entries print `[redacted]` and suppress
    *  diffs/state (values may carry the secret too). Function: maps args for
    *  display only — diffs still print. */
@@ -198,6 +202,7 @@ export function logInterceptor(options: LogInterceptorOptions = {}): () => void 
     colors = 'auto',
     depth = 3,
     level = 'debug',
+    banner = true,
     redact,
     logger = console as LoggerSink,
   } = options
@@ -234,6 +239,17 @@ export function logInterceptor(options: LogInterceptorOptions = {}): () => void 
   const emit = ((logger[level] ?? logger.log) as (...a: unknown[]) => void).bind(logger)
   const emitError = logger.error.bind(logger)
   const ts = () => (timestamps ? ` ${wallClock()}` : '')
+
+  if (banner) {
+    const legend =
+      '[tambour] timeline on — … fired  ✓ settled  ✗ failed  ⊘ superseded  ∅ no-op  ⇣ fetch  stale invalidated  ← caused-by'
+    try {
+      if (rich) emit(`%c${legend}`, STYLE.muted)
+      else emit(legend)
+    } catch {
+      /* a broken sink at install — the per-entry guards handle the rest */
+    }
+  }
 
   function printUpdate(record: UpdateRecord): void {
     const hidden = masked(record.name)
@@ -286,10 +302,18 @@ export function logInterceptor(options: LogInterceptorOptions = {}): () => void 
 
   function printFire(kind: LogKind, name: string, args: unknown[]): void {
     const argsText = masked(name) ? '[redacted]' : previewArgs(mapArgs(name, args), depth)
+    // command events await a settle — mark the fire as unfinished so the
+    // fire/settle pair can't read as two occurrences. Streams ARE complete
+    // at fire; no marker.
+    const marker = kind === 'event' ? '…' : ''
+    const tail = `${marker}${ts()}`.trim()
     if (rich) {
-      emit(`%c${kind}%c ${name}${argsText ? ` ${argsText}` : ''}%c${ts()}`, STYLE[kind], STYLE.plain, STYLE.muted)
+      emit(
+        `%c${kind}%c ${name}${argsText ? ` ${argsText}` : ''}${tail ? ` %c${tail}` : ''}`,
+        STYLE[kind], STYLE.plain, ...(tail ? [STYLE.muted] : []),
+      )
     } else {
-      emit(plainLine(kind, name, `${argsText}${ts()}`.trim()))
+      emit(plainLine(kind, name, `${argsText ? `${argsText}  ` : ''}${tail}`))
     }
   }
 
