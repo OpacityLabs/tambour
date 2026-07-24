@@ -1,11 +1,17 @@
 import type { Patch } from 'immer'
-import { getAtomNode } from './atom'
-import { addInterceptor, type QueryFetchReason, type UpdateRecord } from './interceptors'
+import { getAtomNode, hydrationRecords } from './atom'
+import {
+  addInterceptor,
+  type HydrationRecord,
+  type QueryFetchReason,
+  type UpdateRecord,
+} from './interceptors'
 
 /** What the logger narrates. Reaction loops are not a kind — they are bugs,
  *  always error-routed and never filtered. For queries the filterable name is
- *  the FAMILY name ('accounts'), never the key. */
-export type LogKind = 'update' | 'event' | 'stream' | 'query'
+ *  the FAMILY name ('accounts'), never the key; for persist lines it is the
+ *  atom name. */
+export type LogKind = 'update' | 'event' | 'stream' | 'query' | 'persist'
 
 /** Name selection: a glob (`'todos/*'`), a list of globs (OR), or a predicate.
  *  A predicate is the whole decision — `exclude` is not layered on top of it. */
@@ -34,6 +40,10 @@ export interface LogInterceptorOptions {
   events?: boolean
   streams?: boolean
   queries?: boolean
+  /** Hydration narration (`persist` lines): one ⇡ line per persisted atom as
+   *  it hydrates, plus an install-time replay of hydrations that finished
+   *  before the logger attached (sync MMKV hydrates at module import). */
+  persists?: boolean
   /** Browser console groups start collapsed. Default: true. */
   collapsed?: boolean
   /** Patch-based `old → new` lines under each update. Default: true. */
@@ -60,7 +70,7 @@ export interface LogInterceptorOptions {
    *  `error`. Default: 'debug' (falls back to `log` if the sink lacks it). */
   level?: 'debug' | 'log' | 'info'
   /** One-time legend line at install teaching the glyph vocabulary
-   *  (… ✓ ✗ ⊘ ∅ ⇣ ←) — the timeline should be readable without folklore.
+   *  (… ✓ ✗ ⊘ ∅ ⇣ ⇡ ←) — the timeline should be readable without folklore.
    *  `false` suppresses. Default: true. */
   banner?: boolean
   /** Secrets guard. Glob(s): matching entries print `[redacted]` and suppress
@@ -166,6 +176,7 @@ const STYLE = {
   event: 'color:#2196f3;font-weight:bold',
   stream: 'color:#00bcd4;font-weight:bold',
   query: 'color:#9c27b0;font-weight:bold',
+  persist: 'color:#ff9800;font-weight:bold',
   plain: 'color:inherit;font-weight:normal',
   muted: 'color:#9e9e9e;font-weight:normal',
   ok: 'color:#4caf50;font-weight:bold',
@@ -194,6 +205,7 @@ export function logInterceptor(options: LogInterceptorOptions = {}): () => void 
     events = true,
     streams = true,
     queries = true,
+    persists = true,
     collapsed = true,
     diff = true,
     state = 'none',
@@ -222,6 +234,7 @@ export function logInterceptor(options: LogInterceptorOptions = {}): () => void 
     event: events,
     stream: streams,
     query: queries,
+    persist: persists,
   }
   const shows = (kind: LogKind, name: string) => kindOn[kind] && allowName(name, kind)
 
@@ -242,7 +255,7 @@ export function logInterceptor(options: LogInterceptorOptions = {}): () => void 
 
   if (banner) {
     const legend =
-      '[tambour] timeline on — … fired  ✓ settled  ✗ failed  ⊘ superseded  ∅ no-op  ⇣ fetch  stale invalidated  ← caused-by'
+      '[tambour] timeline on — … fired  ✓ settled  ✗ failed  ⊘ superseded  ∅ no-op  ⇣ fetch  ⇡ hydrated  stale invalidated  ← caused-by'
     try {
       if (rich) emit(`%c${legend}`, STYLE.muted)
       else emit(legend)
@@ -378,6 +391,30 @@ export function logInterceptor(options: LogInterceptorOptions = {}): () => void 
     else emit(plainLine('query', label, `${rest}${ts()}`))
   }
 
+  /** ⇡ hydration lines. `stamp: false` marks the install-time replay of
+   *  hydrations that finished before this logger attached — a wall-clock
+   *  there would read as the hydration moment and lie by the whole boot. */
+  function printHydrate(record: HydrationRecord, stamp: boolean): void {
+    const name = record.atomName
+    const at = stamp ? ts() : ''
+    if (record.error !== undefined) {
+      const line = `✗ hydrate failed: ${errorText(record.error)}`
+      if (rich) emitError(`%cpersist%c ${name} %c${line}%c${at}`, STYLE.persist, STYLE.plain, STYLE.fail, STYLE.muted)
+      else emitError(plainLine('persist', name, `${line}${at}`))
+      return
+    }
+    const rest =
+      record.source === 'initial'
+        ? '⇡ virgin — initial materialized'
+        : record.fromVersion === record.toVersion
+          ? `⇡ hydrated (v${record.toVersion})`
+          : record.fromVersion! < record.toVersion!
+            ? `⇡ hydrated (v${record.fromVersion}→v${record.toVersion}, migrated)`
+            : `⇡ hydrated (v${record.fromVersion} — newer than v${record.toVersion})`
+    if (rich) emit(`%cpersist%c ${name} %c${rest}${at}`, STYLE.persist, STYLE.plain, STYLE.muted)
+    else emit(plainLine('persist', name, `${rest}${at}`))
+  }
+
   // fire → settle pairing by args identity (the interceptor contract) — start
   // times are kept for every command event regardless of filtering so the map
   // stays clean; streams never settle and are never stored. Query fetches
@@ -397,6 +434,18 @@ export function logInterceptor(options: LogInterceptorOptions = {}): () => void 
       } catch {
         /* the sink itself is broken — nothing left to do */
       }
+    }
+  }
+
+  // Hydration that finished BEFORE this logger attached: with sync storage
+  // atoms hydrate during module import, so a logger installed in app setup
+  // would otherwise narrate nothing about persistence. Replayed unstamped;
+  // later hydrations (async storage, late-registered atoms) arrive live
+  // through onHydrate — a record exists only after its hook fired, so the
+  // two paths never print the same hydration twice.
+  if (persists) {
+    for (const record of hydrationRecords()) {
+      if (shows('persist', record.atomName)) guard(() => printHydrate(record, false))
     }
   }
 
@@ -433,6 +482,9 @@ export function logInterceptor(options: LogInterceptorOptions = {}): () => void 
     },
     onQueryInvalidate: (name, keyArgs, origin) => guard(() => {
       if (shows('query', name)) printQueryInvalidate(name, keyArgs, origin)
+    }),
+    onHydrate: record => guard(() => {
+      if (shows('persist', record.atomName)) printHydrate(record, true)
     }),
   })
 }

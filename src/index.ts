@@ -6,6 +6,7 @@ export {
   clearRegistry,
   hydrated,
   hydrationOf,
+  hydrationRecords,
   resetAll,
   restore,
   snapshot,
@@ -40,6 +41,7 @@ export { atomToStream } from './bridges'
 export {
   addInterceptor,
   type EventKind,
+  type HydrationRecord,
   type Interceptor,
   type QueryFetchReason,
   type UpdateRecord,

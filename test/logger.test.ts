@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest'
-import { atom, clearRegistry } from '../src/atom'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { atom, clearRegistry, hydrated } from '../src/atom'
 import { event, streamEvent } from '../src/events'
 import { runReactionLoop } from '../src/interceptors'
 import { logInterceptor, type LoggerSink } from '../src/logger'
 import { mutation } from '../src/mutation'
 import { invalidate, query } from '../src/query'
+import { asyncStorage, memoryStorage } from '../src/storage'
 import { update } from '../src/update'
 
 beforeEach(() => clearRegistry())
@@ -361,6 +362,104 @@ describe('logInterceptor: output modes', () => {
     const d2 = logInterceptor({ ...quiet, logger: hidden.sink })
     d2()
     expect(hidden.lines).toHaveLength(0)
+  })
+})
+
+describe('logInterceptor: persistence (hydration)', () => {
+  const envelope = (data: unknown, v = 1) => JSON.stringify({ v, data })
+
+  it('narrates hydration live for atoms that register while attached', () => {
+    const { sink, lines } = makeSink()
+    const dispose = logInterceptor({ ...quiet, logger: sink })
+    atom('profile', { name: '' }, {
+      persist: { storage: memoryStorage({ profile: envelope({ name: 'stored' }) }) },
+    })
+    dispose()
+    expect(lines[0]).toMatch(/^persist\s+profile\s+⇡ hydrated \(v1\)$/)
+  })
+
+  it('renders a migration replay with the version span', () => {
+    const storage = memoryStorage({ cart: envelope({ total: 1 }, 1) })
+    const { sink, lines } = makeSink()
+    const dispose = logInterceptor({ ...quiet, logger: sink })
+    atom('cart', { total: 0, coupon: null as string | null }, {
+      persist: {
+        storage,
+        version: 3,
+        migrations: { 2: (d: any) => ({ ...d, coupon: null }), 3: (d: any) => d },
+      },
+    })
+    dispose()
+    expect(lines[0]).toMatch(/^persist\s+cart\s+⇡ hydrated \(v1→v3, migrated\)$/)
+  })
+
+  it('renders virgin keys as materialized initials', () => {
+    const { sink, lines } = makeSink()
+    const dispose = logInterceptor({ ...quiet, logger: sink })
+    atom('draft', { text: '' }, { persist: { storage: memoryStorage() } })
+    dispose()
+    expect(lines[0]).toMatch(/^persist\s+draft\s+⇡ virgin — initial materialized$/)
+  })
+
+  it('failed hydration error-routes with the error text', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { sink, lines, errors } = makeSink()
+    const dispose = logInterceptor({ ...quiet, logger: sink })
+    atom('profile', { name: '' }, { persist: { storage: memoryStorage({ profile: '{not json' }) } })
+    dispose()
+    spy.mockRestore()
+    expect(errors[0]).toMatch(/^persist\s+profile\s+✗ hydrate failed: SyntaxError/)
+    expect(lines).toHaveLength(0)
+  })
+
+  it('replays hydrations that finished before install (sync storage beats any logger)', () => {
+    atom('profile', { name: '' }, {
+      persist: { storage: memoryStorage({ profile: envelope({ name: 'stored' }) }) },
+    })
+    atom('draft', { text: '' }, { persist: { storage: memoryStorage() } })
+
+    const { sink, lines } = makeSink()
+    const dispose = logInterceptor({ ...quiet, logger: sink })
+    dispose()
+    expect(lines[0]).toMatch(/^persist\s+profile\s+⇡ hydrated \(v1\)$/)
+    expect(lines[1]).toMatch(/^persist\s+draft\s+⇡ virgin — initial materialized$/)
+  })
+
+  it('replayed lines are unstamped; live lines carry the wall clock', () => {
+    atom('profile', { name: '' }, { persist: { storage: memoryStorage() } })
+    const { sink, lines } = makeSink()
+    const dispose = logInterceptor({ colors: false, banner: false, logger: sink })
+    atom('draft', { text: '' }, { persist: { storage: memoryStorage() } })
+    dispose()
+    expect(lines[0]).toMatch(/materialized$/)              // replay: no timestamp
+    expect(lines[1]).toMatch(/\d{2}:\d{2}:\d{2}\.\d{3}$/)  // live: stamped
+  })
+
+  it('async storage narrates when the read settles — never replayed twice', async () => {
+    const { sink, lines } = makeSink()
+    const dispose = logInterceptor({ ...quiet, logger: sink })
+    atom('cart', { total: 0 }, {
+      persist: { storage: asyncStorage(memoryStorage({ cart: envelope({ total: 42 }) })) },
+    })
+    expect(lines).toHaveLength(0)                          // read still in flight
+    await hydrated()
+    dispose()
+    expect(lines).toEqual([expect.stringMatching(/^persist\s+cart\s+⇡ hydrated \(v1\)$/)])
+  })
+
+  it('persists: false silences replay and live lines; filter selects by atom name', () => {
+    atom('profile', { name: '' }, { persist: { storage: memoryStorage() } })
+
+    const off = makeSink()
+    const d1 = logInterceptor({ ...quiet, persists: false, logger: off.sink })
+    atom('draft', { text: '' }, { persist: { storage: memoryStorage() } })
+    d1()
+    expect(off.lines).toHaveLength(0)
+
+    const filtered = makeSink()
+    const d2 = logInterceptor({ ...quiet, filter: 'draft', logger: filtered.sink })
+    d2()
+    expect(filtered.lines).toEqual([expect.stringMatching(/^persist\s+draft\s+⇡ virgin/)])
   })
 })
 

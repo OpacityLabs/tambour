@@ -1,4 +1,5 @@
 import { observable, batch } from '@legendapp/state'
+import type { HydrationRecord } from './interceptors'
 import { persistAtom, type PersistConfig, type PersistHandle } from './persist'
 import type { Atom, ReadonlyNode } from './types'
 
@@ -70,6 +71,19 @@ export function hydrated(): Promise<void> {
     .filter(e => e.persist)
     .map(e => e.persist!.whenHydrated)
   return Promise.all(pending).then(() => undefined)
+}
+
+/** Hydration outcomes recorded so far — for tools that attach after
+ *  module-load hydration (sync MMKV hydrates during atom() registration,
+ *  before any interceptor can install; onHydrate alone would miss those).
+ *  Unpersisted atoms have no record; an atom on async storage appears once
+ *  its read settles. */
+export function hydrationRecords(): HydrationRecord[] {
+  const out: HydrationRecord[] = []
+  for (const entry of registry.values()) {
+    if (entry.persist?.record) out.push(entry.persist.record)
+  }
+  return out
 }
 
 /** Internal/devtools: the writable node for a registered atom. */

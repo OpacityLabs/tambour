@@ -8,6 +8,22 @@ export type EventKind = 'event' | 'stream'
  *  revalidation (age, or a prior error), or an invalidation. */
 export type QueryFetchReason = 'activate' | 'stale' | 'invalidate'
 
+/** Outcome of one persisted atom's hydration. `source` is where the atom's
+ *  post-hydration value came from: 'storage' (the stored envelope applied,
+ *  with fromVersion → toVersion describing any migration replay) or 'initial'
+ *  (a virgin key whose initial was materialized — or, when `error` is set, a
+ *  failure that kept the initial). */
+export interface HydrationRecord {
+  atomName: string
+  source: 'storage' | 'initial'
+  /** Version the envelope was stored at (source 'storage' only). */
+  fromVersion?: number
+  /** The atom's current schema version (source 'storage' only). */
+  toVersion?: number
+  /** Parse/migration/storage-read failure — the atom kept its initial value. */
+  error?: unknown
+}
+
 export interface UpdateRecord {
   name: string
   args: unknown[]
@@ -58,6 +74,12 @@ export interface Interceptor {
    *  it, or null for direct calls (a retry button). Any refetches it causes
    *  arrive as their own onQueryFetch('invalidate') calls. */
   onQueryInvalidate?: (queryName: string, keyArgs: unknown[] | 'all', origin: string | null) => void
+  /** A persisted atom finished hydrating — stored data applied, a virgin
+   *  key's initial materialized, or a failure keeping the initial. Fires
+   *  after the atom's hydrated node flips true. Sync storage (MMKV) hydrates
+   *  during atom() registration, so an interceptor installed later sees
+   *  nothing live — read hydrationRecords() for what already happened. */
+  onHydrate?: (record: HydrationRecord) => void
 }
 
 const interceptors: Interceptor[] = []
@@ -151,6 +173,18 @@ export function runQueryInvalidate(
       i.onQueryInvalidate?.(queryName, keyArgs, origin)
     } catch (err) {
       console.error('[tambour] onQueryInvalidate interceptor threw:', err)
+    }
+  }
+}
+
+/** Dispatched from hydration paths — module-import time for sync storage,
+ *  promise continuations for async — so interceptor errors are contained. */
+export function runHydrate(record: HydrationRecord): void {
+  for (const i of interceptors) {
+    try {
+      i.onHydrate?.(record)
+    } catch (err) {
+      console.error('[tambour] onHydrate interceptor threw:', err)
     }
   }
 }

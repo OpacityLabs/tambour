@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { atom, clearRegistry, hydrated, hydrationOf, resetAll } from '../src/atom'
+import { atom, clearRegistry, hydrated, hydrationOf, hydrationRecords, resetAll } from '../src/atom'
+import { addInterceptor, type HydrationRecord } from '../src/interceptors'
 import { asyncStorage, memoryStorage } from '../src/storage'
 import { update } from '../src/update'
 
@@ -211,5 +212,97 @@ describe('persistence: failure modes', () => {
     expect(cart.total.peek()).toBe(0)
     expect(hydrationOf(cart).peek()).toBe(true)
     spy.mockRestore()
+  })
+})
+
+describe('persistence: hydration records + onHydrate', () => {
+  it('sync storage: onHydrate fires during atom(), record readable after', () => {
+    const records: HydrationRecord[] = []
+    const dispose = addInterceptor({ onHydrate: r => records.push(r) })
+    const storage = memoryStorage({ cart: envelope({ total: 5 }) })
+    atom('cart', { total: 0 }, { persist: { storage } })
+    dispose()
+
+    expect(records).toEqual([{ atomName: 'cart', source: 'storage', fromVersion: 1, toVersion: 1 }])
+    expect(hydrationRecords()).toEqual(records)
+  })
+
+  it('migration replay records the version span', () => {
+    const records: HydrationRecord[] = []
+    const dispose = addInterceptor({ onHydrate: r => records.push(r) })
+    const storage = memoryStorage({ cart: envelope({ total: 10 }, 1) })
+    atom('cart', { total: 0, coupon: null as string | null }, {
+      persist: { storage, version: 3, migrations: { 2: (d: any) => ({ ...d, coupon: null }), 3: (d: any) => d } },
+    })
+    dispose()
+    expect(records).toEqual([{ atomName: 'cart', source: 'storage', fromVersion: 1, toVersion: 3 }])
+  })
+
+  it('virgin key records source initial', () => {
+    const records: HydrationRecord[] = []
+    const dispose = addInterceptor({ onHydrate: r => records.push(r) })
+    atom('cart', { total: 0 }, { persist: { storage: memoryStorage() } })
+    dispose()
+    expect(records).toEqual([{ atomName: 'cart', source: 'initial' }])
+  })
+
+  it('corrupted JSON records the error; the atom kept its initial', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const records: HydrationRecord[] = []
+    const dispose = addInterceptor({ onHydrate: r => records.push(r) })
+    atom('cart', { total: 0 }, { persist: { storage: memoryStorage({ cart: '{not json' }) } })
+    dispose()
+    spy.mockRestore()
+    expect(records[0]).toMatchObject({ atomName: 'cart', source: 'initial' })
+    expect(records[0]!.error).toBeInstanceOf(SyntaxError)
+  })
+
+  it('async storage: no record until the read settles, then the hook fires', async () => {
+    const records: HydrationRecord[] = []
+    const dispose = addInterceptor({ onHydrate: r => records.push(r) })
+    const storage = asyncStorage(memoryStorage({ cart: envelope({ total: 42 }) }))
+    atom('cart', { total: 0 }, { persist: { storage } })
+
+    expect(records).toEqual([])
+    expect(hydrationRecords()).toEqual([])            // read still in flight
+
+    await hydrated()
+    dispose()
+    expect(records).toEqual([{ atomName: 'cart', source: 'storage', fromVersion: 1, toVersion: 1 }])
+    expect(hydrationRecords()).toEqual(records)
+  })
+
+  it('async read rejection records the error', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const records: HydrationRecord[] = []
+    const dispose = addInterceptor({ onHydrate: r => records.push(r) })
+    const storage = {
+      getString: () => Promise.reject(new Error('disk gone')),
+      setString: () => {},
+      remove: () => {},
+    }
+    atom('cart', { total: 0 }, { persist: { storage } })
+    await hydrated()
+    dispose()
+    spy.mockRestore()
+    expect(records[0]).toMatchObject({ atomName: 'cart', source: 'initial' })
+    expect((records[0]!.error as Error).message).toBe('disk gone')
+  })
+
+  it('a throwing onHydrate interceptor is contained — hydration completes', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const dispose = addInterceptor({ onHydrate: () => { throw new Error('boom') } })
+    const storage = memoryStorage({ cart: envelope({ total: 5 }) })
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })
+    dispose()
+    expect(cart.total.peek()).toBe(5)
+    expect(hydrationOf(cart).peek()).toBe(true)
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('onHydrate'), expect.anything())
+    spy.mockRestore()
+  })
+
+  it('unpersisted atoms produce no records', () => {
+    atom('session', { active: false })
+    expect(hydrationRecords()).toEqual([])
   })
 })
