@@ -1,5 +1,12 @@
 import { batch, observable } from '@legendapp/state'
 import { synced } from '@legendapp/state/sync'
+import { currentOrigin } from './context'
+import {
+  runQueryFetch,
+  runQueryInvalidate,
+  runQuerySettle,
+  type QueryFetchReason,
+} from './interceptors'
 import type { ReadonlyNode } from './types'
 
 /**
@@ -25,9 +32,9 @@ import type { ReadonlyNode } from './types'
  *
  * The node's value is the RESULT ENVELOPE — data and metadata travel together:
  *
- *   const result = use$(libraryBooks('austen'))   // { data, pending, stale, error, fetchedAt }
- *   const books  = use$(libraryBooks('austen').data)      // data-only subscription
- *   const busy   = use$(libraryBooks('austen').pending)   // pending-only subscription
+ *   const result = useValue(libraryBooks('austen'))   // { data, pending, stale, error, fetchedAt }
+ *   const books  = useValue(libraryBooks('austen').data)      // data-only subscription
+ *   const busy   = useValue(libraryBooks('austen').pending)   // pending-only subscription
  *
  * Legend's per-node granularity makes the envelope free: subscribing to
  * `.data` never re-renders on a `fetchedAt` bump. Because data and status live
@@ -74,21 +81,25 @@ export interface QueryResult<T> {
 }
 
 interface Entry {
-  store$: any // observable<QueryResult> — one tree, so data+status can't tear
-  node$: any // synced wrapper providing the activation lifecycle; public access goes through a lazyNode handle
+  store: any // observable<QueryResult> — one tree, so data+status can't tear
+  node: any // synced wrapper providing the activation lifecycle; public access goes through a lazyNode handle
   active: boolean
   inFlight: boolean
   invalidated: boolean // invalidated mid-flight → refetch on settle
   evictTimer: ReturnType<typeof setTimeout> | null
-  fetch: () => void
+  fetch: (reason: QueryFetchReason) => void
 }
 
 interface FamilyRegistry {
+  name: string
   cache: Map<string, Entry>
   nodes: Map<string, object> // one lazy handle per key, evicted with its entry
 }
 
-const NODE_REF = new WeakMap<object, { cache: Map<string, Entry>; key: string }>()
+const NODE_REF = new WeakMap<
+  object,
+  { cache: Map<string, Entry>; key: string; name: string; args: unknown[] }
+>()
 const FAMILY_ENTRIES = new WeakMap<object, FamilyRegistry>()
 // Iterable registry for resetQueries(). Strong references are fine: query
 // families are module-level singletons — they never GC in real programs, and
@@ -111,9 +122,9 @@ const ALL_FAMILIES = new Set<FamilyRegistry>()
  * instead of stranding an orphan that invalidation silently misses.
  *
  * Trade-offs (deliberate): a query node is a tambour node surface, not a raw
- * Legend observable — selector deps, use$/useValue, and onChange all route
+ * Legend observable — selector deps, useValue, and onChange all route
  * through get()/onChange() and work unchanged, but passing one DIRECTLY to a
- * Legend API that wants an observable (Memo, raw Legend use$) is unsupported.
+ * Legend API that wants an observable (Memo, Legend's raw `use$`) is unsupported.
  * Envelope fields shadowed by Object.prototype names ('toString', 'valueOf')
  * are unreachable as child handles.
  */
@@ -162,7 +173,7 @@ export function query<Args extends unknown[], T>(
     const hit = cache.get(key)
     if (hit) return hit
 
-    const store$ = observable({
+    const store = observable({
       data: options?.default as T | undefined,
       pending: false,
       stale: true,
@@ -171,73 +182,79 @@ export function query<Args extends unknown[], T>(
     }) as any
 
     const entry: Entry = {
-      store$,
-      node$: undefined,
+      store,
+      node: undefined,
       active: false,
       inFlight: false,
       invalidated: false,
       evictTimer: null,
-      fetch: () => doFetch(),
+      fetch: reason => doFetch(reason),
     }
 
-    const doFetch = (): void => {
+    const doFetch = (reason: QueryFetchReason): void => {
       if (entry.inFlight) return // dedupe: one request per key at a time
       entry.inFlight = true
       entry.invalidated = false
-      store$.pending.set(true)
+      runQueryFetch(name, args, reason) // post-dedupe: every emission is a real request
+      store.pending.set(true)
       fetcher(...args).then(
         result => {
           entry.inFlight = false
           // structural sharing: deep-equal subtrees keep their old references,
           // so an unchanged payload produces zero data notifications
-          const shared = replaceEqualDeep(store$.data.peek(), result)
+          const shared = replaceEqualDeep(store.data.peek(), result)
           batch(() => {
-            store$.data.set(shared)
-            store$.assign({
+            store.data.set(shared)
+            store.assign({
               pending: false,
               stale: false,
               error: undefined,
               fetchedAt: Date.now(),
             })
           })
+          runQuerySettle(name, args, undefined)
           settle()
         },
         error => {
           entry.inFlight = false
           // hold the last data; stale stays true so the next activation retries
           batch(() => {
-            store$.assign({ pending: false, stale: true, error })
+            store.assign({ pending: false, stale: true, error })
           })
+          runQuerySettle(name, args, error)
           settle()
         },
       )
     }
 
     const settle = (): void => {
-      if (entry.invalidated && entry.active) doFetch()
+      if (entry.invalidated && entry.active) doFetch('invalidate')
     }
 
     const revalidateIfStale = (): void => {
       if (!entry.active || entry.inFlight) return
-      const fetchedAt = store$.fetchedAt.peek()
+      const fetchedAt = store.fetchedAt.peek()
       const fresh =
         !entry.invalidated &&
         fetchedAt !== undefined &&
         Date.now() - fetchedAt <= staleTime &&
-        store$.error.peek() === undefined
-      if (!fresh) doFetch()
+        store.error.peek() === undefined
+      if (!fresh)
+        doFetch(
+          entry.invalidated ? 'invalidate' : fetchedAt === undefined ? 'activate' : 'stale',
+        )
     }
 
-    entry.node$ = observable(
+    entry.node = observable(
       synced({
-        // Shallow-copy is load-bearing: store$.get() returns Legend's raw
+        // Shallow-copy is load-bearing: store.get() returns Legend's raw
         // root, which Legend MUTATES IN PLACE on field writes — returning it
         // directly makes every recompute reference-equal to the last, so
         // change detection sees nothing and subscribers go permanently dark
         // (polling .get() would still work, hiding the bug). A fresh envelope
         // per recompute notifies correctly; `data` keeps its shared reference,
         // so data-only subscribers still skip no-op refetches.
-        get: () => ({ ...store$.get() }),
+        get: () => ({ ...store.get() }),
         subscribe: () => {
           entry.active = true
           if (entry.evictTimer) {
@@ -267,14 +284,14 @@ export function query<Args extends unknown[], T>(
     const key = stableArgsKey(name, args)
     const hit = nodes.get(key)
     if (hit) return hit as ReadonlyNode<QueryResult<T | undefined>>
-    const node: object = lazyNode(() => entryFor(key, args).node$)
+    const node: object = lazyNode(() => entryFor(key, args).node)
     nodes.set(key, node)
-    NODE_REF.set(node, { cache, key })
+    NODE_REF.set(node, { cache, key, name, args })
     return node as ReadonlyNode<QueryResult<T | undefined>>
   }
 
   Object.defineProperty(family, 'name', { value: name })
-  const registry: FamilyRegistry = { cache, nodes }
+  const registry: FamilyRegistry = { name, cache, nodes }
   FAMILY_ENTRIES.set(family, registry)
   ALL_FAMILIES.add(registry)
   return family
@@ -329,6 +346,13 @@ export function invalidate(target: object): void {
   if (!registry && !ref) {
     throw new Error('[tambour] invalidate: not a query family or query node')
   }
+  // Emitted for the CALL (even when nothing is cached — the intent is the
+  // timeline fact); origin ties a mutation-settle invalidation to its mutation.
+  runQueryInvalidate(
+    registry ? registry.name : ref!.name,
+    registry ? 'all' : ref!.args,
+    currentOrigin(),
+  )
   // A handle whose entry evicted (or was never built) has nothing to mark:
   // its next observation builds a virgin entry, which is stale by construction.
   const entries = registry
@@ -338,8 +362,8 @@ export function invalidate(target: object): void {
       : []
   for (const entry of entries) {
     entry.invalidated = true
-    entry.store$.stale.set(true)
-    if (entry.active && !entry.inFlight) entry.fetch()
+    entry.store.stale.set(true)
+    if (entry.active && !entry.inFlight) entry.fetch('invalidate')
   }
 }
 

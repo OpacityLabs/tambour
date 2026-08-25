@@ -1,10 +1,10 @@
 import { batch, observable } from '@legendapp/state'
 import { Observable } from 'rxjs'
 import { currentOrigin, runWithOrigin } from './context'
-import { runEventError, runEventFire, runEventSettle } from './interceptors'
+import { runEventError, runEventFire, runEventSettle, type EventKind } from './interceptors'
 import type { ReadonlyNode } from './types'
 
-/** Observable in-flight status of a command event (see `statusOf`). */
+/** Observable in-flight status of a command event (its `.status` node). */
 export interface EventStatus {
   /** At least one invocation is currently running. */
   pending: boolean
@@ -92,7 +92,12 @@ interface EventInternals {
   readonly name: string
 }
 
-export type CommandEvent<A extends unknown[], R> = ((...args: A) => Promise<R>) & EventInternals
+export type CommandEvent<A extends unknown[], R> = ((...args: A) => Promise<R>) &
+  EventInternals & {
+    /** The event's observable in-flight status node — read it like any node:
+     *  `useValue(save.status.pending)`, `selector(save.status, s => ...)`. */
+    readonly status: ReadonlyNode<EventStatus>
+  }
 export type StreamEvent<T> = ((payload: T) => void) & EventInternals
 
 function makeInternals<F extends (...args: never[]) => unknown>(fn: F, name: string): F & EventInternals {
@@ -105,8 +110,8 @@ function makeInternals<F extends (...args: never[]) => unknown>(fn: F, name: str
   return fn as F & EventInternals
 }
 
-function notify(ev: EventInternals, args: unknown[]): void {
-  runEventFire(ev[EVENT_NAME], args)
+function notify(ev: EventInternals, args: unknown[], kind: EventKind): void {
+  runEventFire(ev[EVENT_NAME], args, kind)
   const payload = args.length <= 1 ? args[0] : args
   for (const l of ev[LISTENERS]) l(payload)
 }
@@ -147,25 +152,25 @@ export function event(
   let inFlight: Promise<unknown> | null = null           // exhaust
   let controller: AbortController | null = null          // switch
 
-  const status$ = observable<EventStatus>({
+  const status = observable<EventStatus>({
     pending: false, inFlight: 0, error: undefined, success: false,
   })
 
   const settle = (superseded: boolean, error?: unknown): void => {
     batch(() => {
-      const n = Math.max(0, status$.inFlight.peek() - 1)
+      const n = Math.max(0, status.inFlight.peek() - 1)
       // a supersession is not an outcome — only the surviving run may write
       // error/success, even if the superseded handler ran to completion
-      if (superseded) status$.assign({ pending: n > 0, inFlight: n })
-      else if (error !== undefined) status$.assign({ pending: n > 0, inFlight: n, error, success: false })
-      else status$.assign({ pending: n > 0, inFlight: n, success: true })
+      if (superseded) status.assign({ pending: n > 0, inFlight: n })
+      else if (error !== undefined) status.assign({ pending: n > 0, inFlight: n, error, success: false })
+      else status.assign({ pending: n > 0, inFlight: n, success: true })
     })
   }
 
   const fire = (...args: unknown[]): Promise<unknown> => {
     if (concurrency === 'exhaust' && inFlight) return inFlight // coalesced: status untouched
 
-    notify(ev, args)
+    notify(ev, args, 'event')
 
     let handlerArgs = args
     if (concurrency === 'switch') {
@@ -176,8 +181,8 @@ export function event(
     const myController = controller
 
     batch(() => {
-      status$.assign({
-        pending: true, inFlight: status$.inFlight.peek() + 1, error: undefined, success: false,
+      status.assign({
+        pending: true, inFlight: status.inFlight.peek() + 1, error: undefined, success: false,
       })
     })
 
@@ -218,7 +223,10 @@ export function event(
     const fireOnSettle = (superseded: boolean, error?: unknown): void => {
       if (!onSettle) return
       try {
-        onSettle(superseded, error, args)
+        // origin context so anything the settle hook triggers synchronously
+        // (a mutation's invalidations, and their timeline entries) is
+        // attributed to this event
+        runWithOrigin(name, () => onSettle(superseded, error, args))
       } catch (hookError) {
         runEventError(name, hookError, args) // e.g. a bad invalidation target
       }
@@ -253,8 +261,9 @@ export function event(
   }
 
   const ev = makeInternals(fire, name)
-  EVENT_STATUS.set(ev, status$)
-  return ev
+  EVENT_STATUS.set(ev, status)
+  Object.defineProperty(ev, 'status', { value: status })
+  return ev as CommandEvent<any[], any>
 }
 
 /**
@@ -263,7 +272,7 @@ export function event(
  */
 export function streamEvent<T = void>(name: string): StreamEvent<T> {
   const fire = (payload: T): void => {
-    notify(ev, [payload])
+    notify(ev, [payload], 'stream')
   }
   const ev = makeInternals(fire, name)
   return ev as StreamEvent<T>

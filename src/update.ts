@@ -44,20 +44,20 @@ interface BaseCache {
 
 const baseCaches = new WeakMap<object, BaseCache>()
 
-function cacheFor(node$: any): BaseCache {
-  let cache = baseCaches.get(node$)
+function cacheFor(node: any): BaseCache {
+  let cache = baseCaches.get(node)
   if (!cache) {
     cache = { version: 0, cachedVersion: -1, value: undefined }
-    baseCaches.set(node$, cache)
+    baseCaches.set(node, cache)
     const c = cache
-    node$.onChange(() => { c.version++ })
+    node.onChange(() => { c.version++ })
   }
   return cache
 }
 
-function currentValue(node$: any): unknown {
-  const cache = cacheFor(node$)
-  return cache.cachedVersion === cache.version ? cache.value : node$.peek()
+function currentValue(node: any): unknown {
+  const cache = cacheFor(node)
+  return cache.cachedVersion === cache.version ? cache.value : node.peek()
 }
 
 /** Apply a patch set to its atoms in one batch, maintaining a plain-data
@@ -73,12 +73,12 @@ function applyPatchSet(
   batch(() => {
     for (const patch of patches) {
       const atomKey = patch.path[0] as string
-      const atom$ = writes[atomKey]
+      const atom = writes[atomKey]
       applyPatches(
-        atom$,
+        atom,
         [{ ...patch, path: patch.path.slice(1) }],
         parentPath => parentPath.reduce((n: any, k) => n?.[k], shadow[atomKey]),
-        fastAppendsFor(atom$) ? { fastAppends: true } : undefined,
+        fastAppendsFor(atom) ? { fastAppends: true } : undefined,
       )
       shadow = immerApplyPatches(shadow, [patch])
     }
@@ -88,7 +88,7 @@ function applyPatchSet(
 
 /**
  * Declare a named, multi-atom transition.
- *   const addItem = update('cart/addItem', { cart: cart$ }, (d, item: Item) => { ... })
+ *   const addItem = update('cart/addItem', { cart }, (d, item: Item) => { ... })
  * The recipe drafts a composite snapshot of the scope; patches are routed back
  * to each atom by their first path segment and applied in one batch (atomic to
  * subscribers). A recipe that throws — or a `before` interceptor veto, or a

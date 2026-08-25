@@ -61,12 +61,12 @@ describe('applyPatches property test', () => {
   it('patch application ≡ Immer next, for arbitrary mutation sequences', () => {
     fc.assert(
       fc.property(fc.array(step, { minLength: 1, maxLength: 25 }), steps => {
-        const obs$ = observable(initialState()) as any
+        const obs = observable(initialState()) as any
         const [next, patches] = produceWithPatches(initialState(), (d: State) => {
           for (const { cmd, i, s } of steps) commands[cmd]!(d, i, s)
         })
-        applyPatches(obs$, patches)
-        expect(obs$.peek()).toEqual(next)
+        applyPatches(obs, patches)
+        expect(obs.peek()).toEqual(next)
       }),
       { numRuns: 500 },
     )
@@ -75,13 +75,13 @@ describe('applyPatches property test', () => {
   it('inverse patches restore the original state', () => {
     fc.assert(
       fc.property(fc.array(step, { minLength: 1, maxLength: 15 }), steps => {
-        const obs$ = observable(initialState()) as any
+        const obs = observable(initialState()) as any
         const [, patches, inverse] = produceWithPatches(initialState(), (d: State) => {
           for (const { cmd, i, s } of steps) commands[cmd]!(d, i, s)
         })
-        applyPatches(obs$, patches)
-        applyPatches(obs$, inverse)
-        expect(obs$.peek()).toEqual(initialState())
+        applyPatches(obs, patches)
+        applyPatches(obs, inverse)
+        expect(obs.peek()).toEqual(initialState())
       }),
       { numRuns: 300 },
     )

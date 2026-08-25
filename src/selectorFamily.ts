@@ -12,7 +12,7 @@ export interface FamilyOptions {
  * Parameterized selectors with a keyed cache and refCount eviction:
  *
  *   const todoById = selectorFamily((id: string) =>
- *     selector(todos$.items, items => items.find(t => t.id === id)))
+ *     selector(todos.items, items => items.find(t => t.id === id)))
  *
  * Same args -> same cached node. An entry evicts `graceMs` after its last
  * observer unsubscribes (re-observation within the grace window cancels
@@ -23,23 +23,23 @@ export function selectorFamily<Args extends unknown[], R>(
   options?: FamilyOptions,
 ): (...args: Args) => ReadonlyNode<R> {
   const graceMs = options?.graceMs ?? 100
-  const cache = new Map<string, { node$: any; evictTimer: ReturnType<typeof setTimeout> | null }>()
+  const cache = new Map<string, { node: any; evictTimer: ReturnType<typeof setTimeout> | null }>()
 
   return (...args: Args) => {
     const key = JSON.stringify(args)
     const hit = cache.get(key)
-    if (hit) return hit.node$
+    if (hit) return hit.node
 
-    const inner$ = factory(...args)
+    const inner = factory(...args)
     const entry = {
       evictTimer: null as ReturnType<typeof setTimeout> | null,
-      node$: undefined as any,
+      node: undefined as any,
     }
     // synced gives us the lifecycle: `subscribe` runs on first observer, its
     // cleanup on last-observer-detach — which is where eviction is scheduled.
-    entry.node$ = observable(
+    entry.node = observable(
       synced({
-        get: () => inner$.get(),
+        get: () => inner.get(),
         subscribe: () => {
           if (entry.evictTimer) {
             clearTimeout(entry.evictTimer)
@@ -52,6 +52,6 @@ export function selectorFamily<Args extends unknown[], R>(
       }) as any,
     )
     cache.set(key, entry)
-    return entry.node$ as ReadonlyNode<R>
+    return entry.node as ReadonlyNode<R>
   }
 }

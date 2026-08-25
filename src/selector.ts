@@ -3,7 +3,7 @@ import type { ReadonlyNode, ReadonlyNodeBase } from './types'
 
 /** Node check that never touches properties on Legend observables: accessing
  *  even the `.get` PROPERTY of a synced node (streamSelector, family entry)
- *  activates it — a module-level `selector(stream$, ...)` declaration would
+ *  activates it — a module-level `selector(stream, ...)` declaration would
  *  start the pipeline at import time. isObservable is symbol-based and inert;
  *  the property fallback only runs for plain wrapper nodes (equals-selectors),
  *  which have no activation semantics. */
@@ -20,10 +20,10 @@ type Node<T> = ReadonlyNodeBase<T>
  * Synchronous derivation. Two forms:
  *
  *   deps-then-combiner (the default — combiner is a pure function of plain values):
- *     const visible$ = selector(todos$.items, ui$.filter, (items, filter) => ...)
+ *     const visible = selector(todos.items, ui.filter, (items, filter) => ...)
  *
  *   thunk (escape hatch for genuinely dynamic dependencies, Legend auto-tracking):
- *     const x$ = selector(() => (mode$.get() === 'a' ? a$.get() : b$.get()))
+ *     const x = selector(() => (mode.get() === 'a' ? a.get() : b.get()))
  *
  * Options trail: selector(...deps, combiner, { equals: shallowEqual })
  */
@@ -57,8 +57,8 @@ export function selector(...args: unknown[]): any {
       ? (combiner as () => unknown)                       // thunk form: auto-tracked
       : () => combiner(...deps.map(d => d.get()))         // deps form: tracked via .get()
 
-  const inner$ = observable(compute)
-  return options?.equals ? equalsNode(inner$, options.equals) : inner$
+  const inner = observable(compute)
+  return options?.equals ? equalsNode(inner, options.equals) : inner
 }
 
 /**
@@ -70,7 +70,7 @@ export function selector(...args: unknown[]): any {
  * the node surface (get/peek/onChange) but not child path nodes — derived
  * values are consumed whole.
  */
-function equalsNode(inner$: any, equals: (a: any, b: any) => boolean): any {
+function equalsNode(inner: any, equals: (a: any, b: any) => boolean): any {
   let last: unknown
   let has = false
   const memo = (next: unknown) => {
@@ -80,10 +80,10 @@ function equalsNode(inner$: any, equals: (a: any, b: any) => boolean): any {
     return last
   }
   return {
-    get: () => memo(inner$.get()),
-    peek: () => memo(inner$.peek()),
+    get: () => memo(inner.get()),
+    peek: () => memo(inner.peek()),
     onChange: (cb: (e: { value: unknown }) => void) =>
-      inner$.onChange(({ value }: { value: unknown }) => {
+      inner.onChange(({ value }: { value: unknown }) => {
         const prev = last
         const hadValue = has
         const next = memo(value)

@@ -22,13 +22,13 @@ function makeFakeConnector() {
 
 describe('redux devtools adapter', () => {
   it('inits with the full snapshot and sends named actions with state', async () => {
-    const cart$ = atom('cart', { items: [] as string[], total: 0 })
+    const cart = atom('cart', { items: [] as string[], total: 0 })
     const { connector, sent, inits } = makeFakeConnector()
     const dispose = connectDevtools({ connector })
 
     expect(inits).toEqual([{ cart: { items: [], total: 0 } }])
 
-    const addItem = update('cart/add', { cart: cart$ }, (d, item: string) => {
+    const addItem = update('cart/add', { cart: cart }, (d, item: string) => {
       d.cart.items.push(item)
       d.cart.total += 1
     })
@@ -70,14 +70,14 @@ describe('redux devtools adapter', () => {
   })
 
   it('time travel: JUMP restores the jumped-to state; RESET restores initials', () => {
-    const cart$ = atom('cart', { total: 0 })
-    const setTotal = update('cart/set', { cart: cart$ }, (d, v: number) => { d.cart.total = v })
+    const cart = atom('cart', { total: 0 })
+    const setTotal = update('cart/set', { cart: cart }, (d, v: number) => { d.cart.total = v })
     const { connector, sent, dispatch } = makeFakeConnector()
     const dispose = connectDevtools({ connector })
 
     setTotal(10)
     setTotal(20)
-    expect(cart$.total.peek()).toBe(20)
+    expect(cart.total.peek()).toBe(20)
 
     // the extension hands back the stored state for the jumped-to action
     dispatch({
@@ -85,10 +85,10 @@ describe('redux devtools adapter', () => {
       payload: { type: 'JUMP_TO_ACTION' },
       state: JSON.stringify(sent[0]!.state),
     })
-    expect(cart$.total.peek()).toBe(10)
+    expect(cart.total.peek()).toBe(10)
 
     dispatch({ type: 'DISPATCH', payload: { type: 'RESET' } })
-    expect(cart$.total.peek()).toBe(0)
+    expect(cart.total.peek()).toBe(0)
     dispose()
   })
 
@@ -101,8 +101,8 @@ describe('redux devtools adapter', () => {
 
 describe('history ring buffer', () => {
   it('records update records and honors the limit', () => {
-    const a$ = atom('a', { v: 0 })
-    const setV = update('a/set', { a: a$ }, (d, v: number) => { d.a.v = v })
+    const a = atom('a', { v: 0 })
+    const setV = update('a/set', { a: a }, (d, v: number) => { d.a.v = v })
     const history = recordHistory(3)
 
     for (let i = 1; i <= 5; i++) setV(i)
@@ -113,18 +113,18 @@ describe('history ring buffer', () => {
   })
 
   it('inverse patches from history revert a transition (the undo recipe)', () => {
-    const a$ = atom('a', { list: [1, 2] })
-    const push = update('a/push', { a: a$ }, (d, v: number) => { d.a.list.push(v) })
+    const a = atom('a', { list: [1, 2] })
+    const push = update('a/push', { a: a }, (d, v: number) => { d.a.list.push(v) })
     const history = recordHistory()
 
     push(3)
-    expect(a$.list.peek()).toEqual([1, 2, 3])
+    expect(a.list.peek()).toEqual([1, 2, 3])
 
     const last = history.entries().at(-1)!
     for (const patch of last.inverse) {
-      applyPatches(a$, [{ ...patch, path: patch.path.slice(1) }])
+      applyPatches(a, [{ ...patch, path: patch.path.slice(1) }])
     }
-    expect(a$.list.peek()).toEqual([1, 2])
+    expect(a.list.peek()).toEqual([1, 2])
     history.dispose()
   })
 })
