@@ -1,4 +1,5 @@
 import { observable } from '@legendapp/state'
+import { runHydrate, type HydrationRecord } from './interceptors'
 import type { TambourStorage } from './storage'
 
 export interface PersistConfig {
@@ -22,8 +23,12 @@ export interface PersistConfig {
 }
 
 export interface PersistHandle {
-  hydrated$: any               // Legend observable<boolean> (kept internal-typed)
+  hydrated: any               // Legend observable<boolean> (kept internal-typed)
   whenHydrated: Promise<void>
+  /** Hydration outcome — undefined only while an async read is in flight.
+   *  Kept so tools that attach after hydration can read what happened (sync
+   *  MMKV hydrates during module import, before any interceptor installs). */
+  readonly record?: HydrationRecord
 }
 
 /** Envelope written to storage. */
@@ -39,29 +44,42 @@ interface Stored {
  * serialized from the change event's value — never a peek). Hydration
  * failures log and leave the initial value; the app keeps working.
  */
-export function persistAtom(node$: any, atomName: string, config: PersistConfig): PersistHandle {
+export function persistAtom(node: any, atomName: string, config: PersistConfig): PersistHandle {
   const key = config.key ?? atomName
   const targetVersion = config.version ?? 1
-  const hydrated$ = observable(false)
+  const hydrated = observable(false)
   let applyingStored = false
+  let record: HydrationRecord | undefined
+
+  // record lands before the flip and the hook, so an onHydrate interceptor
+  // reading either sees a settled atom
+  const settle = (outcome: HydrationRecord): void => {
+    record = outcome
+    hydrated.set(true)
+    runHydrate(outcome)
+  }
 
   const applyStored = (raw: string | null | undefined): void => {
+    let outcome: HydrationRecord
     if (raw != null) {
       try {
         const stored = JSON.parse(raw) as Stored
+        const fromVersion = stored.v ?? 1
         let data = stored.data
-        for (let v = (stored.v ?? 1) + 1; v <= targetVersion; v++) {
+        for (let v = fromVersion + 1; v <= targetVersion; v++) {
           const migrate = config.migrations?.[v]
           if (migrate) data = migrate(data)
         }
         applyingStored = true
         try {
-          node$.set(data)
+          node.set(data)
         } finally {
           applyingStored = false
         }
+        outcome = { atomName, source: 'storage', fromVersion, toVersion: targetVersion }
       } catch (error) {
         console.error(`[tambour] failed to hydrate atom '${atomName}':`, error)
+        outcome = { atomName, source: 'initial', error }
       }
     } else {
       // No stored value: materialize the initial value NOW. This makes
@@ -71,10 +89,11 @@ export function persistAtom(node$: any, atomName: string, config: PersistConfig)
       // drops unknown keys the moment its reducer set shrinks).
       void config.storage.setString(
         key,
-        JSON.stringify({ v: targetVersion, data: node$.peek() }),
+        JSON.stringify({ v: targetVersion, data: node.peek() }),
       )
+      outcome = { atomName, source: 'initial' }
     }
-    hydrated$.set(true)
+    settle(outcome)
   }
 
   const raw = config.storage.getString(key)
@@ -82,7 +101,7 @@ export function persistAtom(node$: any, atomName: string, config: PersistConfig)
     raw instanceof Promise
       ? raw.then(applyStored, error => {
           console.error(`[tambour] storage read failed for atom '${atomName}':`, error)
-          hydrated$.set(true)
+          settle({ atomName, source: 'initial', error })
         })
       : (applyStored(raw), Promise.resolve())
 
@@ -95,7 +114,7 @@ export function persistAtom(node$: any, atomName: string, config: PersistConfig)
   let trailing: ReturnType<typeof setTimeout> | null = null
   let latest: unknown
 
-  node$.onChange(({ value }: { value: unknown }) => {
+  node.onChange(({ value }: { value: unknown }) => {
     if (applyingStored) return
     if (!throttleMs) {
       write(value)
@@ -116,5 +135,5 @@ export function persistAtom(node$: any, atomName: string, config: PersistConfig)
     }
   })
 
-  return { hydrated$, whenHydrated }
+  return { hydrated, whenHydrated, get record() { return record } }
 }

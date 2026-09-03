@@ -1,6 +1,6 @@
 // The search flow from the design dialog, end to end:
 //
-//   searchUi$.query  →  debouncedQuery$  →  libraryBooks(key)  →  visibleBooks$
+//   searchUi.query  →  debouncedQuery  →  libraryBooks(key)  →  visibleBooks
 //       (atom)         (temporal node)      (fetch if stale)       (sync sort)
 //
 // No reaction, no imperative fetch anywhere: queries are PULL-based —
@@ -19,26 +19,26 @@ import {
 import { debounceTime, distinctUntilChanged, filter, map } from 'rxjs/operators'
 import { donateBook, fetchBooks, type Book } from '../api'
 
-export const searchUi$ = atom('searchUi', {
+export const searchUi = atom('searchUi', {
   query: '',
   keepPrevious: true,
   sortBy: 'date' as 'date' | 'title',
 })
 
-export const setQuery = update('searchUi/setQuery', { ui: searchUi$ }, (d, q: string) => {
+export const setQuery = update('searchUi/setQuery', { ui: searchUi }, (d, q: string) => {
   d.ui.query = q
 })
-export const setSortBy = update('searchUi/setSortBy', { ui: searchUi$ }, (d, sortBy: 'date' | 'title') => {
+export const setSortBy = update('searchUi/setSortBy', { ui: searchUi }, (d, sortBy: 'date' | 'title') => {
   d.ui.sortBy = sortBy
 })
-export const toggleKeepPrevious = update('searchUi/toggleKeepPrevious', { ui: searchUi$ }, d => {
+export const toggleKeepPrevious = update('searchUi/toggleKeepPrevious', { ui: searchUi }, d => {
   d.ui.keepPrevious = !d.ui.keepPrevious
 })
 
 // Debouncing is temporal → streamSelector territory (never a reaction: rule 4).
 // The debounced value is a real node — inspectable, observable by anything.
-export const debouncedQuery$ = streamSelector(
-  atomToStream(searchUi$.query).pipe(debounceTime(250), distinctUntilChanged()),
+export const debouncedQuery = streamSelector(
+  atomToStream(searchUi.query).pipe(debounceTime(250), distinctUntilChanged()),
   { default: '' },
 )
 
@@ -54,16 +54,16 @@ export const libraryBooks = query('library/books', fetchBooks, {
 // The query node's value IS the result envelope — data and metadata travel
 // together: { data, pending, stale, error, fetchedAt }. This selector just
 // picks the CURRENT key's envelope (dynamic keys need the thunk form — the
-// spec's escape hatch). A component could equally use$(libraryBooks(q).data)
+// spec's escape hatch). A component could equally useValue(libraryBooks(q).data)
 // for a data-only subscription.
-export const searchState$ = selector(() => libraryBooks(debouncedQuery$.get()).get())
+export const searchState = selector(() => libraryBooks(debouncedQuery.get()).get())
 
 // Gate in time: the keepPrevious recipe. Unsettled frames are suppressed, so
 // downstream holds the previous key's settled list while the next key is in
 // flight. Gate on pending AND stale — `stale` is true synchronously on a
 // virgin key, covering the microtask before `pending` flips.
-const settledBooks$ = streamSelector(
-  atomToStream(searchState$).pipe(
+const settledBooks = streamSelector(
+  atomToStream(searchState).pipe(
     filter(s => !s.pending && !s.stale),
     map(s => s.data),
   ),
@@ -71,9 +71,9 @@ const settledBooks$ = streamSelector(
 )
 
 // The component reads ONE node: network call + client-side sort, composed.
-export const visibleBooks$ = selector(() => {
-  const source = searchUi$.keepPrevious.get() ? settledBooks$.get() : searchState$.get().data
-  const sortBy = searchUi$.sortBy.get()
+export const visibleBooks = selector(() => {
+  const source = searchUi.keepPrevious.get() ? settledBooks.get() : searchState.get().data
+  const sortBy = searchUi.sortBy.get()
   return [...source].sort(
     sortBy === 'date' ? (a, b) => a.written - b.written : (a, b) => a.title.localeCompare(b.title),
   )

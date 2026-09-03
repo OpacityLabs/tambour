@@ -3,7 +3,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { event } from '../src/events'
 import { statusOf } from '../src/status'
-import { use$ } from '../src/react'
+import { useValue } from '../src/react'
 
 afterEach(() => cleanup())
 
@@ -20,31 +20,31 @@ function deferred<T>() {
  * The mutation-DX claims under test:
  *
  * 1. Fire and settle each assign multiple status fields (pending/success/
- *    error) in ONE batch → a component holding several per-field use$ hooks
+ *    error) in ONE batch → a component holding several per-field useValue hooks
  *    renders exactly once per moment.
  * 2. No torn frame is observable: never { pending: true, success: true },
  *    never a settle where success lands a render after pending.
  * 3. Per-field silence: an error-only subscriber stays silent through a whole
  *    successful fire→settle cycle (error never changes value).
  */
-describe('statusOf granularity through use$', () => {
+describe('statusOf granularity through useValue', () => {
   it('one render per moment, frames never torn, error subscriber silent on success', async () => {
     const gate = deferred<string>()
     const save = event('gran/save', () => gate.promise)
-    const status$ = statusOf(save) as any
+    const status = statusOf(save) as any
 
     const frames: { pending: boolean; success: boolean }[] = []
     let errorRenders = 0
 
     function StatusProbe() {
-      const pending = use$(status$.pending) as boolean
-      const success = use$(status$.success) as boolean
+      const pending = useValue(status.pending) as boolean
+      const success = useValue(status.success) as boolean
       frames.push({ pending, success })
       return null
     }
     function ErrorProbe() {
       errorRenders++
-      use$(status$.error)
+      useValue(status.error)
       return null
     }
 

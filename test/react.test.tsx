@@ -8,7 +8,7 @@ import { selector } from '../src/selector'
 import { selectorFamily } from '../src/selectorFamily'
 import { streamSelector } from '../src/streamSelector'
 import { update } from '../src/update'
-import { use$ } from '../src/react'
+import { useValue } from '../src/react'
 
 beforeEach(() => clearRegistry())
 afterEach(() => cleanup())
@@ -21,20 +21,20 @@ const shallowEqual = (a: any, b: any) => {
 }
 
 function makeStore() {
-  const cart$ = atom('cart', {
+  const cart = atom('cart', {
     items: [{ id: 'a', qty: 1 }, { id: 'b', qty: 2 }],
   })
-  const setQty = update('cart/setQty', { cart: cart$ }, (d, index: number, qty: number) => {
+  const setQty = update('cart/setQty', { cart: cart }, (d, index: number, qty: number) => {
     d.cart.items[index]!.qty = qty
   })
-  return { cart$, setQty }
+  return { cart, setQty }
 }
 
-describe('use$: basic subscription', () => {
+describe('useValue: basic subscription', () => {
   it('renders the value and re-renders on update', () => {
-    const { cart$, setQty } = makeStore()
+    const { cart, setQty } = makeStore()
     function Qty() {
-      return <span data-testid="qty">{use$(cart$.items[0]!.qty)}</span>
+      return <span data-testid="qty">{useValue(cart.items[0]!.qty)}</span>
     }
     render(<Qty />)
     expect(screen.getByTestId('qty').textContent).toBe('1')
@@ -44,14 +44,14 @@ describe('use$: basic subscription', () => {
   })
 })
 
-describe('use$: targeted re-renders (the Legend axis, through our API)', () => {
+describe('useValue: targeted re-renders (the Legend axis, through our API)', () => {
   it('a row re-renders only when ITS item changes', () => {
-    const { cart$, setQty } = makeStore()
+    const { cart, setQty } = makeStore()
     const renders = { a: 0, b: 0 }
 
     function Row({ index, id }: { index: number; id: 'a' | 'b' }) {
       renders[id]++
-      return <span data-testid={id}>{use$(cart$.items[index]!.qty)}</span>
+      return <span data-testid={id}>{useValue(cart.items[index]!.qty)}</span>
     }
     render(<><Row index={0} id="a" /><Row index={1} id="b" /></>)
     expect(renders).toEqual({ a: 1, b: 1 })
@@ -62,13 +62,13 @@ describe('use$: targeted re-renders (the Legend axis, through our API)', () => {
   })
 
   it('an equals-selector suppresses re-renders for structurally equal recomputes', () => {
-    const todos$ = atom('todos', { items: [{ done: true }, { done: false }] })
-    const swap = update('todos/swap', { t: todos$ }, d => {
+    const todos = atom('todos', { items: [{ done: true }, { done: false }] })
+    const swap = update('todos/swap', { t: todos }, d => {
       d.t.items[0]!.done = !d.t.items[0]!.done
       d.t.items[1]!.done = !d.t.items[1]!.done
     })
-    const stats$ = selector(
-      todos$.items,
+    const stats = selector(
+      todos.items,
       items => ({ total: items.length, done: items.filter(t => t.done).length }),
       { equals: shallowEqual },
     )
@@ -76,7 +76,7 @@ describe('use$: targeted re-renders (the Legend axis, through our API)', () => {
     let renders = 0
     function Stats() {
       renders++
-      const s = use$(stats$)
+      const s = useValue(stats)
       return <span data-testid="stats">{s.done}/{s.total}</span>
     }
     render(<Stats />)
@@ -88,13 +88,13 @@ describe('use$: targeted re-renders (the Legend axis, through our API)', () => {
   })
 })
 
-describe('use$: streamSelector integration', () => {
+describe('useValue: streamSelector integration', () => {
   it('renders the default, then emissions as they arrive', async () => {
     const source = new Subject<string[]>()
-    const results$ = streamSelector(source.asObservable(), { default: [] as string[] })
+    const searchResults = streamSelector(source.asObservable(), { default: [] as string[] })
 
     function Results() {
-      const results = use$(results$)
+      const results = useValue(searchResults)
       return <span data-testid="r">{results.length === 0 ? 'empty' : results.join(',')}</span>
     }
     render(<Results />)
@@ -107,10 +107,10 @@ describe('use$: streamSelector integration', () => {
 
   it('works under StrictMode double-mounting', async () => {
     const source = new Subject<number>()
-    const value$ = streamSelector(source.asObservable(), { default: 0 })
+    const value = streamSelector(source.asObservable(), { default: 0 })
 
     function Value() {
-      return <span data-testid="v">{use$(value$)}</span>
+      return <span data-testid="v">{useValue(value)}</span>
     }
     render(<StrictMode><Value /></StrictMode>)
     expect(screen.getByTestId('v').textContent).toBe('0')
@@ -123,13 +123,13 @@ describe('use$: streamSelector integration', () => {
   })
 })
 
-describe('use$: React 19 concurrency', () => {
+describe('useValue: React 19 concurrency', () => {
   it('store updates interleaved with startTransition render consistently (no tearing)', () => {
-    const { cart$, setQty } = makeStore()
+    const { cart, setQty } = makeStore()
     const seen: Array<{ qty: number; label: string }> = []
 
     function Probe() {
-      const qty = use$(cart$.items[0]!.qty)
+      const qty = useValue(cart.items[0]!.qty)
       const [label, setLabel] = useState('initial')
       seen.push({ qty, label })
       return (
@@ -155,15 +155,15 @@ describe('use$: React 19 concurrency', () => {
   })
 })
 
-describe('use$: selectorFamily lifecycle under React', () => {
+describe('useValue: selectorFamily lifecycle under React', () => {
   it('family entries survive StrictMode and unmount/remount within grace', async () => {
-    const { cart$, setQty } = makeStore()
+    const { cart, setQty } = makeStore()
     const qtyById = selectorFamily((id: string) =>
-      selector(cart$.items, items => items.find(t => t.id === id)?.qty),
+      selector(cart.items, items => items.find(t => t.id === id)?.qty),
     )
 
     function Qty({ id }: { id: string }) {
-      return <span data-testid="fam">{use$(qtyById(id))}</span>
+      return <span data-testid="fam">{useValue(qtyById(id))}</span>
     }
     const first = render(<StrictMode><Qty id="a" /></StrictMode>)
     expect(screen.getByTestId('fam').textContent).toBe('1')
@@ -179,14 +179,14 @@ describe('use$: selectorFamily lifecycle under React', () => {
   })
 })
 
-describe('use$: identity-keyed memoization sees structural array changes', () => {
+describe('useValue: identity-keyed memoization sees structural array changes', () => {
   // Regression for the shine favorites bug: appends used to mutate the raw
-  // array in place, so a useMemo keyed on a use$-returned array never
+  // array in place, so a useMemo keyed on a useValue-returned array never
   // recomputed — the component re-rendered but showed the memo's stale
   // output. Structural ops now always produce a new array identity.
-  it('useMemo keyed on a use$ array recomputes after successive appends', () => {
-    const favorites$ = atom('favorites', { ids: [] as string[] })
-    const toggle = update('favorites/toggle', { f: favorites$ }, (d, id: string) => {
+  it('useMemo keyed on a useValue array recomputes after successive appends', () => {
+    const favorites = atom('favorites', { ids: [] as string[] })
+    const toggle = update('favorites/toggle', { f: favorites }, (d, id: string) => {
       const i = d.f.ids.indexOf(id)
       if (i === -1) d.f.ids.push(id)
       else d.f.ids.splice(i, 1)
@@ -197,7 +197,7 @@ describe('use$: identity-keyed memoization sees structural array changes', () =>
     ]
 
     function Favorites() {
-      const ids = use$((favorites$ as any).ids) as string[]
+      const ids = useValue((favorites as any).ids) as string[]
       const picked = useMemo(() => ALL.filter(w => ids.includes(w.id)), [ids])
       return <span data-testid="favs">{picked.map(w => w.name).join(',')}</span>
     }

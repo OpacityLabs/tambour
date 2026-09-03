@@ -33,7 +33,7 @@ later tests.
 ```ts
 await createWalletSession();
 await sleep(5);
-const s = statusOf(createWalletSession).get();
+const s = createWalletSession.status.get();
 expect(s.success).toBe(true);
 expect(s.error).toBeUndefined();
 ```
@@ -68,7 +68,7 @@ equality guards (zero notifications for unchanged payloads):
 
 ```ts
 let notifications = 0;
-passport$.onChange(() => notifications++);
+passport.onChange(() => notifications++);
 landPassportData(data, encrypted); // two fields, one update
 expect(notifications).toBe(1);
 ```
@@ -83,7 +83,7 @@ const sub = createSubmissionPollingStream(10).subscribe();
 try {
   startSubmissionPolling();
   await sleep(120);
-  expect(submission$.status.peek()).toBe("completed");
+  expect(submission.status.peek()).toBe("completed");
 } finally {
   sub.unsubscribe();
 }
@@ -99,12 +99,12 @@ Activate by observing — attach `onChange`, read, then wait TWO ticks
 synchronous signal):
 
 ```ts
-const node$ = accountsQuery("professional");
-const dispose = node$.onChange(() => {});
+const node = accountsQuery("professional");
+const dispose = node.onChange(() => {});
 try {
-  expect(node$.get().stale).toBe(true); // virgin, synchronously
+  expect(node.get().stale).toBe(true); // virgin, synchronously
   await tick(); await tick();
-  expect(node$.get().data).toEqual([...]);
+  expect(node.get().data).toEqual([...]);
 } finally {
   dispose(); // always — leaked observers keep entries active
 }
