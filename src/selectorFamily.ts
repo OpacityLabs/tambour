@@ -1,4 +1,4 @@
-import { observable } from '@legendapp/state'
+import { internal, observable } from '@legendapp/state'
 import { synced } from '@legendapp/state/sync'
 import type { ReadonlyNode } from './types'
 
@@ -35,18 +35,37 @@ export function selectorFamily<Args extends unknown[], R>(
       evictTimer: null as ReturnType<typeof setTimeout> | null,
       node: undefined as any,
     }
-    // synced gives us the lifecycle: `subscribe` runs on first observer, its
-    // cleanup on last-observer-detach — which is where eviction is scheduled.
+    // Legend never disposes a synced `get`'s dependency tracking, so reading
+    // `inner` there directly would pin it (and any query under it) forever.
+    // Read through a computed instead: its own listener on `inner` can be
+    // dropped at eviction, the same release selector() does.
+    const compute = (): unknown => inner.get()
+    const computed = observable(compute)
+    const computedNode = internal.getNode(computed)
+    let resync: (() => void) | undefined
+    // synced gives us the lifecycle: `subscribe` runs on first observer (child
+    // observers included), its cleanup on last-observer-detach — which is
+    // where eviction is scheduled. The release waits for eviction too, so
+    // grace-window thrash never tears down (and refetches) the inner.
     entry.node = observable(
       synced({
-        get: () => inner.get(),
+        get: ({ refresh }) => {
+          resync = refresh
+          return computed.get()
+        },
         subscribe: () => {
           if (entry.evictTimer) {
             clearTimeout(entry.evictTimer)
             entry.evictTimer = null
           }
           return () => {
-            entry.evictTimer = setTimeout(() => cache.delete(key), graceMs)
+            entry.evictTimer = setTimeout(() => {
+              cache.delete(key)
+              internal.reactivateNode(computedNode, compute)
+              // the released computed no longer tracks inner: the next read or
+              // observer of this (evicted) node re-syncs via dirtyFn
+              internal.getNode(entry.node).dirtyFn = resync
+            }, graceMs)
           }
         },
       }) as any,

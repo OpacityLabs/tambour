@@ -1,4 +1,4 @@
-import { batch, observable } from '@legendapp/state'
+import { ObservableHint, batch, observable } from '@legendapp/state'
 import { synced } from '@legendapp/state/sync'
 import { currentOrigin } from './context'
 import {
@@ -197,7 +197,10 @@ export function query<Args extends unknown[], T>(
       entry.invalidated = false
       runQueryFetch(name, args, reason) // post-dedupe: every emission is a real request
       store.pending.set(true)
-      fetcher(...args).then(
+      // The executor form routes a synchronous throw into the rejection path
+      // (and adopts a plain returned value) — calling `.then` on the raw call
+      // would let a sync throw escape with inFlight/pending stuck true forever.
+      new Promise<T>(resolve => resolve(fetcher(...args))).then(
         result => {
           entry.inFlight = false
           // structural sharing: deep-equal subtrees keep their old references,
@@ -217,6 +220,12 @@ export function query<Args extends unknown[], T>(
         },
         error => {
           entry.inFlight = false
+          // Legend diffs object values by their enumerable keys, and an Error
+          // has none — undefined → Error would notify nobody on `.error`.
+          // Opaque makes the node compare the error by reference.
+          if (typeof error === 'object' && error !== null && Object.isExtensible(error)) {
+            ObservableHint.opaque(error)
+          }
           // hold the last data; stale stays true so the next activation retries
           batch(() => {
             store.assign({ pending: false, stale: true, error })

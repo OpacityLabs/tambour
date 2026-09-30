@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { atom, clearRegistry } from '../src/atom'
 import { selector } from '../src/selector'
 import { update } from '../src/update'
+import { atomToStream } from '../src/bridges'
+import { observe } from '@legendapp/state'
 
 beforeEach(() => clearRegistry())
 
@@ -97,5 +99,55 @@ describe('selector: equals option', () => {
     const add = update('todos/add', { t: todos }, d => { d.t.items.push({ done: true }) })
     add()
     expect(notifications).toEqual([{ total: 3, done: 2 }])   // real change notifies
+  })
+
+  const makeStats = () => {
+    const todos = atom('todos', { items: [{ done: true }, { done: false }] })
+    const stats = selector(
+      todos.items,
+      items => ({ total: items.length, done: items.filter(t => t.done).length }),
+      { equals: shallowEqual },
+    )
+    const swap = update('todos/swap', { t: todos }, d => {
+      d.t.items[0]!.done = false
+      d.t.items[1]!.done = true
+    })
+    const add = update('todos/add', { t: todos }, d => { d.t.items.push({ done: true }) })
+    return { stats, swap, add }
+  }
+
+  it('every onChange listener sees a real change once, none on equal recompute', () => {
+    const { stats, swap, add } = makeStats()
+    const a: unknown[] = []
+    const b: unknown[] = []
+    stats.onChange(({ value }) => a.push(value))
+    stats.onChange(({ value }) => b.push(value))
+
+    swap()
+    expect(a).toEqual([])
+    expect(b).toEqual([])
+
+    add()
+    expect(a).toEqual([{ total: 3, done: 2 }])
+    expect(b).toEqual([{ total: 3, done: 2 }])
+  })
+
+  it('atomToStream still sees changes when get() is read elsewhere', () => {
+    const { stats, add } = makeStats()
+    const seen: unknown[] = []
+    const dispose = observe(() => { stats.get() })
+    const sub = atomToStream(stats).subscribe(v => seen.push(v))
+    add()
+    expect(seen.at(-1)).toEqual({ total: 3, done: 2 })
+    sub.unsubscribe()
+    dispose()
+  })
+
+  it('get() returns the identical reference across equal recomputes', () => {
+    const { stats, swap } = makeStats()
+    stats.onChange(() => {})
+    const first = stats.get()
+    swap()
+    expect(stats.get()).toBe(first)
   })
 })

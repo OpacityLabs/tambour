@@ -1,4 +1,4 @@
-import { isObservable, observable } from '@legendapp/state'
+import { internal, isObservable, observable } from '@legendapp/state'
 import type { ReadonlyNode, ReadonlyNodeBase } from './types'
 
 /** Node check that never touches properties on Legend observables: accessing
@@ -58,6 +58,12 @@ export function selector(...args: unknown[]): any {
       : () => combiner(...deps.map(d => d.get()))         // deps form: tracked via .get()
 
   const inner = observable(compute)
+  // Legend computeds hold their dependency listeners forever once activated,
+  // so an unobserved selector would keep its deps observed (a query dep then
+  // never deactivates: no revalidation, no gc). Release them when the last
+  // observer leaves; the next read re-activates and recomputes.
+  const node = internal.getNode(inner)
+  internal.registerMiddleware(node, 'listeners-cleared', () => internal.reactivateNode(node, compute))
   return options?.equals ? equalsNode(inner, options.equals) : inner
 }
 
@@ -82,12 +88,16 @@ function equalsNode(inner: any, equals: (a: any, b: any) => boolean): any {
   return {
     get: () => memo(inner.get()),
     peek: () => memo(inner.peek()),
-    onChange: (cb: (e: { value: unknown }) => void) =>
-      inner.onChange(({ value }: { value: unknown }) => {
-        const prev = last
-        const hadValue = has
+    // Each subscription tracks its own prev: the shared memo may already have
+    // been advanced by get/peek or another listener before this one runs.
+    onChange: (cb: (e: { value: unknown }) => void) => {
+      let prev = memo(inner.peek())
+      return inner.onChange(({ value }: { value: unknown }) => {
         const next = memo(value)
-        if (!hadValue || next !== prev) cb({ value: next })
-      }),
+        if (next === prev) return
+        prev = next
+        cb({ value: next })
+      })
+    },
   }
 }

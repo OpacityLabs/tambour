@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { observable } from '@legendapp/state'
-import { addInterceptor } from '../src/interceptors'
+import { batch, observable, type Observable } from '@legendapp/state'
+import { addInterceptor, type UpdateRecord } from '../src/interceptors'
+import { reaction } from '../src/reaction'
 import { update } from '../src/update'
 
 describe('update: multi-atom transitions', () => {
@@ -104,6 +105,63 @@ describe('update: base cache', () => {
     settings.rate.set(1.0)      // foreign write to a read atom
     applyRate()
     expect(cart.total.peek()).toBe(30)   // 10*1.5=15, then 15*2=30 — saw the new rate
+  })
+
+  // Re-entrant writes: the batch flush runs reactions that write the same atom
+  // BEFORE the outer update re-validates — its own `next` lacks those writes.
+  it('a reaction-driven update during the flush survives the outer update', () => {
+    const s = observable({ items: [] as string[], log: [] as string[] })
+    const add = update('t/add', { s: s }, (d, v: string) => { d.s.items.push(v) })
+    const logIt = update('t/log', { s: s }, (d, msg: string) => { d.s.log.push(msg) })
+    const off = reaction('t/logLen', s.items, items => logIt(`len=${items.length}`))
+    add('a')
+    add('b')
+    off()
+    expect(s.log.peek()).toEqual(['len=1', 'len=2'])
+  })
+
+  it('a direct set from a reaction during the flush composes with the next update', () => {
+    const s = observable({ n: 0, derived: 0 })
+    const bumpN = update('t/bumpN', { s: s }, d => { d.s.n += 1 })
+    const incDerived = update('t/incDerived', { s: s }, d => { d.s.derived += 1 })
+    const off = reaction('t/derive', s.n, () => { s.derived.set(s.derived.peek() + 10) })
+    bumpN()                      // the reaction lands derived=10 inside bumpN's flush
+    incDerived()
+    off()
+    expect(s.derived.peek()).toBe(11)
+  })
+
+  // Batched foreign writes: the invalidating bump must land with the write,
+  // not at the enclosing batch's flush.
+  it('a foreign write earlier in the same batch is not masked by the cache', () => {
+    const s = observable({ items: ['x'] })
+    const add = update('t/addBatched', { s: s }, (d, v: string) => { d.s.items.push(v) })
+    add('warm')                  // cache now valid
+    batch(() => {
+      s.items.push('foreign')
+      add('mine')
+    })
+    expect(s.items.peek()).toEqual(['x', 'warm', 'foreign', 'mine'])
+  })
+
+  it('undo after a foreign write in the same batch keeps the foreign write', () => {
+    const s = observable({ items: ['a', 'b'] })
+    const remove = update('t/remove', { s: s }, (d, v: string) => {
+      d.s.items.splice(d.s.items.indexOf(v), 1)
+    })
+    const undo = remove('a')     // cache valid at ['b']; the inverse re-inserts 'a'
+    batch(() => {
+      s.items.push('foreign')
+      undo()
+    })
+    expect(s.items.peek()).toEqual(['a', 'b', 'foreign'])
+  })
+
+  it('a multi-op array write on a cold (peeked) base applies each op once', () => {
+    const a = observable({ list: [1] })
+    const pushTwo = update('t/pushTwo', { a: a }, d => { d.a.list.push(2, 3) })
+    pushTwo()                    // no cache yet: the base IS Legend's raw state
+    expect(a.list.peek()).toEqual([1, 2, 3])
   })
 })
 
@@ -233,6 +291,100 @@ describe('update: the returned Undo thunk', () => {
     expect(seen).toEqual([]) // no timeline noise
     expect(a.peek()).toEqual({ v: 1 })
   })
+
+  // Immer emits array splices/reorders as POSITIONAL ops. Applied as-is
+  // against current state they overwrite whatever item now sits at each
+  // index — undo must work by item identity instead.
+  describe('array undo by item identity', () => {
+    type Todo = { id: string; done: boolean }
+    type TodoState = { items: Todo[] }
+    const todos = (): Observable<TodoState> => observable<TodoState>({ items: [
+      { id: 'a', done: false }, { id: 'b', done: false }, { id: 'c', done: false },
+    ] })
+    const ops = (s: Observable<TodoState>) => ({
+      removeAt: update('ids/removeAt', { s }, (d, i: number) => { d.s.items.splice(i, 1) }),
+      removeId: update('ids/removeId', { s }, (d, id: string) => {
+        d.s.items = d.s.items.filter((t: Todo) => t.id !== id)
+      }),
+      toggle: update('ids/toggle', { s }, (d, id: string) => {
+        const t = d.s.items.find((t: Todo) => t.id === id)
+        t.done = !t.done
+      }),
+      add: update('ids/add', { s }, (d, id: string) => { d.s.items.push({ id, done: false }) }),
+      sortDesc: update('ids/sort', { s }, d => {
+        d.s.items.sort((x: Todo, y: Todo) => y.id.localeCompare(x.id))
+      }),
+    })
+
+    it('undoing a splice keeps a later edit to another item', () => {
+      const s = todos()
+      const { removeAt, toggle } = ops(s)
+      const undo = removeAt(0)
+      toggle('c')
+      undo()
+      expect(s.items.peek()).toEqual([
+        { id: 'a', done: false }, { id: 'b', done: false }, { id: 'c', done: true },
+      ])
+    })
+
+    it('overlapping removes: undoing the first keeps the second', () => {
+      const s = todos()
+      const { removeAt, removeId } = ops(s)
+      const undo = removeAt(0)  // a
+      removeId('b')             // a later optimistic remove that succeeds
+      undo()
+      expect(s.items.peek().map(t => t.id)).toEqual(['a', 'c'])
+    })
+
+    it('undoing a reorder keeps a later insert and edit', () => {
+      const s = todos()
+      const { sortDesc, add } = ops(s)
+      const markDone = update('ids/markDone', { s }, (d, i: number) => {
+        d.s.items[i] = { ...d.s.items[i], done: true }
+      })
+      const undo = sortDesc()   // c, b, a
+      markDone(2)               // a — a slot the positional inverse rewrites
+      add('d')
+      undo()
+      expect(s.items.peek()).toEqual([
+        { id: 'a', done: true }, { id: 'b', done: false }, { id: 'c', done: false }, { id: 'd', done: false },
+      ])
+    })
+
+    it('a leaf undo follows its item after a later splice', () => {
+      const s = todos()
+      const { removeAt, toggle } = ops(s)
+      const undo = toggle('c')  // recorded at items[2]
+      removeAt(0)               // c now sits at items[1]
+      undo()
+      expect(s.items.peek()).toEqual([{ id: 'b', done: false }, { id: 'c', done: false }])
+    })
+
+    it('without ids: a splice undo keeps later edits by position when the length is unchanged', () => {
+      const s = observable({ items: [{ n: 1 }, { n: 2 }, { n: 3 }] })
+      const removeAt = update('pos/removeAt', { s }, (d, i: number) => { d.s.items.splice(i, 1) })
+      const bump = update('pos/bump', { s }, (d, i: number) => { d.s.items[i].n += 10 })
+      const undo = removeAt(0)  // [2, 3]
+      bump(1)                   // [2, 13]
+      undo()
+      expect(s.items.peek()).toEqual([{ n: 1 }, { n: 2 }, { n: 13 }])
+    })
+  })
+
+  it('recorded patches and caller payloads are not mutated by later writes', () => {
+    const s = observable({ cfg: { mode: 'z' } })
+    const seen: UpdateRecord[] = []
+    const off = addInterceptor({ after: r => seen.push(r) })
+    const setCfg = update('alias/setCfg', { s }, (d, cfg: { mode: string }) => { d.s.cfg = cfg })
+    const setMode = update('alias/setMode', { s }, (d, mode: string) => { d.s.cfg.mode = mode })
+    const payload = { mode: 'a' }
+    setCfg(payload)
+    setMode('b')
+    off()
+    expect(s.cfg.mode.peek()).toBe('b')
+    expect(payload).toEqual({ mode: 'a' })
+    expect(seen[0]!.patches[0]!.value).toEqual({ mode: 'a' })
+  })
 })
 
 describe('update: fastAppends atom option', () => {
@@ -284,6 +436,25 @@ describe('update: fastAppends atom option', () => {
     scopedAppend(3)
     expect(list.items.peek()).not.toBe(before)
     expect(list.items.peek()).toEqual([1, 2, 3])
+  })
+
+  it('default atom: a reorder (sort, reverse, swap) produces a new array identity', async () => {
+    const list = await freshAtom()
+    const reorders = [
+      update('list/sort', { l: list }, d => { d.l.items.sort((x: number, y: number) => y - x) }),
+      update('list/reverse', { l: list }, d => { d.l.items.reverse() }),
+      update('list/swap', { l: list }, d => {
+        const [x, y] = d.l.items
+        d.l.items[0] = y
+        d.l.items[1] = x
+      }),
+    ]
+    for (const reorder of reorders) {
+      const before = list.items.peek()
+      reorder()
+      expect(list.items.peek()).not.toBe(before)
+    }
+    expect(list.items.peek()).toEqual([2, 1])
   })
 
   it('unregistered raw observables take the safe append', () => {

@@ -3,6 +3,7 @@ import { observable } from '@legendapp/state'
 import { filter, map } from 'rxjs/operators'
 import { query, invalidate, resetQueries, replaceEqualDeep, stableArgsKey } from '../src/query'
 import { selector } from '../src/selector'
+import { selectorFamily } from '../src/selectorFamily'
 import { streamSelector } from '../src/streamSelector'
 import { atomToStream } from '../src/bridges'
 
@@ -401,6 +402,181 @@ describe('query: errors', () => {
     expect(node.get().data).toBe(2)
     expect(node.get().error).toBeUndefined()
     dispose()
+  })
+
+  it('an Error rejection notifies `.error` subscribers (key-less objects still count as a change)', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('err-child', fetcher, { default: 0 })
+    const node = q() as any
+    const seen: unknown[] = []
+    const dispose = node.error.onChange(({ value }: { value: unknown }) => seen.push(value))
+    await tick()
+    const boom = new Error('boom')
+    calls[0]!.reject(boom)
+    await tick()
+    expect(seen).toEqual([boom])
+    expect(seen[0]).toBe(boom) // the caller's error, by reference
+    dispose()
+  })
+
+  it('a fetcher that throws synchronously settles to error; a later invalidate refetches', async () => {
+    let fail = true
+    let n = 0
+    const q = query('sync-throw', (_k: number) => {
+      n++
+      if (fail) throw new Error('sync boom')
+      return Promise.resolve(7)
+    }, { staleTime: 60_000, default: 0 })
+
+    const node = q(1) as any
+    const dispose = node.onChange(() => {})
+    node.get()
+    await tick()
+    expect(n).toBe(1)
+    let result = node.get()
+    expect(result.pending).toBe(false) // not wedged in flight
+    expect((result.error as Error).message).toBe('sync boom')
+    expect(result.stale).toBe(true)
+
+    fail = false
+    expect(() => invalidate(q)).not.toThrow() // the throw no longer escapes the call site
+    await tick()
+    expect(n).toBe(2) // dedupe guard released: the key refetches
+    result = node.get()
+    expect(result.data).toBe(7)
+    expect(result.error).toBeUndefined()
+    dispose()
+  })
+})
+
+// A Legend computed keeps its dependency listeners after its own observers
+// leave; selectors release them, so observing THROUGH a selector drives the
+// entry's lifecycle exactly like observing the node directly.
+describe('query: lifecycle through selectors', () => {
+  it('re-observing a selector after staleTime revalidates; invalidate while unobserved does not fetch', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('sel-stale', fetcher, { staleTime: 0, default: 0 })
+    const tenfold = selector((q(1) as any).data, (d: number) => d * 10) as any
+
+    let dispose = tenfold.onChange(() => {})
+    tenfold.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+    expect(tenfold.get()).toBe(10)
+
+    dispose()
+    await sleep(20)
+    invalidate(q) // inactive: marks stale, no background fetch
+    await tick()
+    expect(calls.length).toBe(1)
+
+    const seen: number[] = []
+    dispose = tenfold.onChange(({ value }: { value: number }) => seen.push(value))
+    expect(tenfold.get()).toBe(10) // cached value served synchronously
+    await tick()
+    expect(calls.length).toBe(2) // re-activation revalidates
+    calls[1]!.resolve(2)
+    await tick()
+    expect(tenfold.get()).toBe(20)
+    expect(seen).toEqual([20])
+    dispose()
+  })
+
+  it('the entry evicts gcTime after the last selector observer leaves', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('sel-gc', fetcher, { staleTime: 60_000, gcTime: 30, default: 0 })
+    const handle = q(1)
+    const tenfold = selector((handle as any).data, (d: number) => d * 10) as any
+
+    let dispose = tenfold.onChange(() => {})
+    tenfold.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+    expect(tenfold.get()).toBe(10)
+    dispose()
+
+    await sleep(80) // > gcTime + async deactivation
+    expect(q(1)).not.toBe(handle) // evicted: a NEW handle
+
+    dispose = tenfold.onChange(() => {})
+    expect(tenfold.get()).toBe(0) // the old handle re-resolves to a virgin entry
+    await tick()
+    expect(calls.length).toBe(2) // refetches despite generous staleTime
+    dispose()
+  })
+
+  it('an errored entry retries when a selector re-activates it', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('sel-err', fetcher, { staleTime: 60_000, default: 0 })
+    const failed = selector((q(1) as any).error, (e: unknown) => e !== undefined) as any
+
+    let dispose = failed.onChange(() => {})
+    failed.get()
+    await tick()
+    calls[0]!.reject(new Error('boom'))
+    await tick()
+    expect(failed.get()).toBe(true)
+    dispose()
+    await sleep(20)
+
+    dispose = failed.onChange(() => {})
+    failed.get()
+    await tick()
+    expect(calls.length).toBe(2) // retry despite staleTime
+    calls[1]!.resolve(1)
+    await tick()
+    expect(failed.get()).toBe(false)
+    dispose()
+  })
+
+  it('through a selectorFamily entry: re-observing after eviction revalidates', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('fam-stale', fetcher, { staleTime: 0, default: 0 })
+    const tenfold = selectorFamily((k: number) => selector(q(k).data, (d: number) => d * 10), { graceMs: 10 })
+    const entry = tenfold(1)
+
+    let dispose = entry.onChange(() => {})
+    entry.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+    expect(entry.get()).toBe(10)
+
+    dispose()
+    await sleep(40) // > graceMs: the entry evicts and releases the query
+    invalidate(q) // inactive: marks stale, no background fetch
+    await tick()
+    expect(calls.length).toBe(1)
+
+    dispose = entry.onChange(() => {}) // a holder of the evicted node re-observes it
+    expect(entry.get()).toBe(10)
+    await tick()
+    expect(calls.length).toBe(2) // re-activation revalidates
+    calls[1]!.resolve(2)
+    await tick()
+    expect(entry.get()).toBe(20)
+    dispose()
+  })
+
+  it('through a selectorFamily entry: the query evicts gcTime after the entry is unobserved', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('fam-gc', fetcher, { staleTime: 60_000, gcTime: 30, default: 0 })
+    const handle = q(1)
+    const tenfold = selectorFamily((k: number) => selector(q(k).data, (d: number) => d * 10), { graceMs: 10 })
+    const entry = tenfold(1)
+
+    const dispose = entry.onChange(() => {})
+    entry.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+    expect(entry.get()).toBe(10)
+    dispose()
+
+    await sleep(80) // > graceMs + gcTime + async deactivation
+    expect(q(1)).not.toBe(handle) // evicted: a NEW handle
   })
 })
 

@@ -3,6 +3,7 @@ import fc from 'fast-check'
 import { observable } from '@legendapp/state'
 import { produceWithPatches } from 'immer'
 import { applyPatches } from '../src/applyPatches'
+import { update } from '../src/update'
 
 /**
  * Property: for ANY sequence of draft mutations over a realistic state shape,
@@ -81,6 +82,23 @@ describe('applyPatches property test', () => {
         })
         applyPatches(obs, patches)
         applyPatches(obs, inverse)
+        expect(obs.peek()).toEqual(initialState())
+      }),
+      { numRuns: 300 },
+    )
+  })
+
+  // update()'s Undo rebases array changes onto current state by identity;
+  // with no later writes that rebase must land exactly on the pre-state.
+  it('update() then its Undo restores the original state', () => {
+    fc.assert(
+      fc.property(fc.array(step, { minLength: 1, maxLength: 15 }), steps => {
+        const obs = observable(initialState())
+        const run = update('prop/run', { s: obs }, d => {
+          for (const { cmd, i, s } of steps) commands[cmd]!(d.s, i, s)
+        })
+        const undo = run()
+        undo()
         expect(obs.peek()).toEqual(initialState())
       }),
       { numRuns: 300 },
