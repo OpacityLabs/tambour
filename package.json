@@ -21,7 +21,7 @@
     "showcase": "npm --prefix examples/showcase install && npm --prefix examples/showcase run dev"
   },
   "peerDependencies": {
-    "@legendapp/state": "3.0.0-beta.47",
+    "@legendapp/state": "3.0.0-beta.48",
     "immer": ">=11",
     "react": ">=18",
     "rxjs": ">=7"
@@ -32,7 +32,7 @@
     }
   },
   "devDependencies": {
-    "@legendapp/state": "3.0.0-beta.47",
+    "@legendapp/state": "3.0.0-beta.48",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
