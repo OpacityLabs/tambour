@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { observable, observe } from '@legendapp/state'
 import { atom, clearRegistry, hydrated, hydrationOf, hydrationRecords, resetAll } from '../src/atom'
 import { addInterceptor, type HydrationRecord } from '../src/interceptors'
 import { asyncStorage, memoryStorage } from '../src/storage'
@@ -186,6 +187,30 @@ describe('persistence: async storage', () => {
     expect(a.v.peek()).toBe(1)
     expect(b.v.peek()).toBe(2)
   })
+
+  // Rule: a write made before the async read settles wins — the stored value
+  // is discarded, memory stays, and storage already holds memory.
+  it('a write during async hydration wins: memory and storage converge on it', async () => {
+    const inner = memoryStorage({ prefs: envelope({ theme: 'dark', lang: 'en' }) })
+    const prefs = atom('prefs', { theme: 'light', lang: 'en' }, { persist: { storage: asyncStorage(inner) } })
+    update('prefs/lang', { prefs }, d => { d.prefs.lang = 'fr' })()
+
+    await hydrated()
+    const stored = JSON.parse(inner.data.get('prefs')!).data
+    expect(prefs.peek()).toEqual({ theme: 'light', lang: 'fr' })
+    expect(stored).toEqual(prefs.peek())
+  })
+
+  it('resetAll during async hydration leaves memory and storage reset', async () => {
+    const inner = memoryStorage({ prefs: envelope({ theme: 'dark' }) })
+    const prefs = atom('prefs', { theme: 'light' }, { persist: { storage: asyncStorage(inner) } })
+    update('prefs/theme', { prefs }, d => { d.prefs.theme = 'blue' })()
+    resetAll()                                          // logout inside the window
+
+    await hydrated()
+    expect(prefs.peek()).toEqual({ theme: 'light' })
+    expect(JSON.parse(inner.data.get('prefs')!).data).toEqual({ theme: 'light' })
+  })
 })
 
 describe('persistence: failure modes', () => {
@@ -211,6 +236,27 @@ describe('persistence: failure modes', () => {
     await hydrated()
     expect(cart.total.peek()).toBe(0)
     expect(hydrationOf(cart).peek()).toBe(true)
+    spy.mockRestore()
+  })
+
+  it('non-JSON values are refused: logged, never written as a lossy shape', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const storage = memoryStorage({ ev: envelope({ at: null, tags: [] }) })
+    const ev = atom('ev', { at: null as Date | null, tags: [] as unknown[] }, { persist: { storage } })
+    const before = storage.data.get('ev')
+
+    update('ev/at', { ev }, d => { d.ev.at = new Date(0) })()
+    update('ev/tags', { ev }, d => { d.ev = { at: null, tags: [new Map([['a', 1]])] } })()
+
+    expect(storage.data.get('ev')).toBe(before)        // no string-for-Date, no `{}`-for-Map
+    expect(spy).toHaveBeenCalledWith(
+      expect.stringContaining("'ev'"),
+      expect.objectContaining({ message: expect.stringMatching(/ev\.at is not plain JSON data \(got Date\)/) }),
+    )
+    expect(spy).toHaveBeenCalledWith(
+      expect.stringContaining("'ev'"),
+      expect.objectContaining({ message: expect.stringMatching(/ev\.tags\[0\] is not plain JSON data \(got Map\)/) }),
+    )
     spy.mockRestore()
   })
 })
@@ -304,5 +350,58 @@ describe('persistence: hydration records + onHydrate', () => {
   it('unpersisted atoms produce no records', () => {
     atom('session', { active: false })
     expect(hydrationRecords()).toEqual([])
+  })
+})
+
+describe('persistence: write-through failures are contained', () => {
+  it('a throwing sync setString: the set succeeds, memory holds, other observers keep working', () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let failWrites = false
+    const storage = {
+      getString: () => envelope({ total: 1 }),
+      setString: () => { if (failWrites) throw new Error('disk full') },
+      remove: () => {},
+    }
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })
+    const setTotal = update('cart/set', { cart: cart }, (d, v: number) => { d.cart.total = v })
+    failWrites = true
+
+    expect(() => setTotal(9)).not.toThrow()
+    expect(cart.total.peek()).toBe(9)
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('cart'), expect.objectContaining({ message: 'disk full' }))
+
+    const other = observable(0)
+    const seen: number[] = []
+    observe(() => { seen.push(other.get()) })
+    other.set(1)
+    expect(seen).toEqual([0, 1])
+    errSpy.mockRestore()
+  })
+
+  it('an async rejecting setString produces no unhandled rejection', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+    // no @types/node in this package: type just the listener API we use
+    type Listener = (reason: unknown) => void
+    type NodeGlobal = { process: { on(e: string, l: Listener): void; off(e: string, l: Listener): void } }
+    const nodeGlobal = globalThis as unknown as NodeGlobal   // vitest runs under node
+    const proc = nodeGlobal.process
+    proc.on('unhandledRejection', onUnhandled)
+    const storage = {
+      getString: () => null,
+      setString: () => Promise.reject(new Error('quota')),
+      remove: () => {},
+    }
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })   // materializes: first rejection
+    const setTotal = update('cart/set', { cart: cart }, (d, v: number) => { d.cart.total = v })
+    setTotal(3)                                                         // write-through: second
+    await new Promise(r => setTimeout(r, 10))
+    proc.off('unhandledRejection', onUnhandled)
+
+    expect(unhandled).toEqual([])
+    expect(cart.total.peek()).toBe(3)
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('cart'), expect.objectContaining({ message: 'quota' }))
+    errSpy.mockRestore()
   })
 })

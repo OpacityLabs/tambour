@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { observable, observe } from '@legendapp/state'
 import { atom, clearRegistry } from '../src/atom'
 import { addInterceptor } from '../src/interceptors'
 import { reaction } from '../src/reaction'
@@ -106,5 +107,29 @@ describe('reaction loop protection', () => {
     setTotal(250)
     expect(clamped).toHaveBeenCalledTimes(1)
     expect(cart.total.peek()).toBe(100)
+  })
+})
+
+describe('reaction: a throwing react function is contained', () => {
+  it('the triggering set survives, the error is reported, and Legend keeps dispatching', () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { cart, setTotal } = makeCart()
+    const flag = atom('flag', { on: false })
+    const failing = update('flag/fail', { flag: flag }, () => { throw new Error('recipe boom') })
+    reaction('r/throws', cart.total, () => { failing() })
+
+    expect(() => setTotal(5)).not.toThrow()
+    expect(cart.total.peek()).toBe(5)
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('r/throws'), expect.objectContaining({ message: 'recipe boom' }))
+
+    // reactivity registered AFTER the throw still works (a throw through
+    // Legend's dispatch kills later observers)
+    const other = observable(0)
+    const seen: number[] = []
+    observe(() => { seen.push(other.get()) })
+    other.set(1)
+    other.set(2)
+    expect(seen).toEqual([0, 1, 2])
+    errSpy.mockRestore()
   })
 })

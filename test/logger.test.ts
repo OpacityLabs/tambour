@@ -138,6 +138,19 @@ describe('logInterceptor: event lifecycle', () => {
     expect(errors.find(l => /✗ \d+ms Error: offline/.test(l))).toBeDefined()
   })
 
+  it('a rejection with undefined settles as ✗, not ✓', async () => {
+    const boom = event('sync/now', async () => { throw undefined })
+    const { sink, lines, errors } = makeSink()
+    const dispose = logInterceptor({ ...quiet, logger: sink })
+
+    await boom().catch(() => {})
+    await flush()
+    dispose()
+
+    expect(errors.find(l => /^event\s+sync\/now\s+✗ \d+ms/.test(l))).toBeDefined()
+    expect(lines.find(l => /✓/.test(l))).toBeUndefined()
+  })
+
   it('marks switch-superseded runs as ⊘, not outcomes', async () => {
     const load = event(
       'profile/load',
@@ -241,6 +254,35 @@ describe('logInterceptor: queries', () => {
     expect(lines).toHaveLength(0)
     off()
     dispose()
+  })
+
+  it('a redact fn maps query key args on fetch, settle, and stale lines', async () => {
+    const { fetcher, calls } = controlledFetcher<string>()
+    const profile = query('profile', fetcher, { staleTime: 60_000 })
+    const { sink, lines } = makeSink()
+    const dispose = logInterceptor({
+      ...quiet,
+      redact: (_name, args) => args.map(() => '***'),
+      logger: sink,
+    })
+
+    const node = profile('ann@example.com')
+    const off = node.onChange(() => {})
+    node.get()
+    await tick()
+    calls[0]!.resolve('v')
+    await tick()
+    invalidate(profile('ann@example.com'))
+    await tick()
+    calls[1]!.resolve('v')
+    await tick()
+    off()
+    dispose()
+
+    expect(lines[0]).toMatch(/^query\s+profile\("\*\*\*"\)\s+⇣ fetch \(activate\)$/)
+    expect(lines[1]).toMatch(/^query\s+profile\("\*\*\*"\)\s+✓ \d+ms$/)
+    expect(lines[2]).toMatch(/^query\s+profile\("\*\*\*"\)\s+stale$/)
+    expect(lines.join('\n')).not.toContain('ann@example.com')
   })
 })
 

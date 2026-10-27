@@ -47,10 +47,12 @@ export interface Interceptor {
   /** Handler errors from events — fires whether or not the caller awaited. */
   onEventError?: (eventName: string, error: unknown, args: unknown[]) => void
   /** Once per logical COMMAND-event run, on its final outcome (after
-   *  retries; `error` undefined = clean settle). `superseded` marks a
-   *  switch-superseded run — not an outcome. `args` is the run's own args
-   *  array, reference-equal to the one onEventFire received, so fire/settle
-   *  pair by identity across overlapping runs. streamEvents never settle.
+   *  retries). `rejected` is the outcome — test it, not `error`: a run can
+   *  reject WITH undefined (`error` is the rejection value, undefined on a
+   *  clean settle). `superseded` marks a switch-superseded run — not an
+   *  outcome. `args` is the run's own args array, reference-equal to the one
+   *  onEventFire received, so fire/settle pair by identity across
+   *  overlapping runs. streamEvents never settle.
    *  (Added 2026-07-17 for the auto-span recipe: fire+error alone cannot
    *  close a span on success.) */
   onEventSettle?: (
@@ -58,6 +60,7 @@ export interface Interceptor {
     error: unknown | undefined,
     args: unknown[],
     superseded: boolean,
+    rejected: boolean,
   ) => void
   /** A reaction loop was circuit-broken (reported once per burst). */
   onReactionLoop?: (name: string, recentChain: string[]) => void
@@ -116,10 +119,11 @@ export function runEventSettle(
   error: unknown | undefined,
   args: unknown[],
   superseded: boolean,
+  rejected: boolean,
 ): void {
   for (const i of interceptors) {
     try {
-      i.onEventSettle?.(eventName, error, args, superseded)
+      i.onEventSettle?.(eventName, error, args, superseded, rejected)
     } catch (err) {
       console.error('[tambour] onEventSettle interceptor threw:', err)
     }

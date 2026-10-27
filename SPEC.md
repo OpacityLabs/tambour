@@ -78,6 +78,19 @@ export const cart = atom('cart', initial, {
   updates span atoms atomically, selectors join across them invisibly.
 - Migrations are a stepwise map (redux-persist style): each migration is written
   once against a shape you knew at the time, never edited again.
+- Storage write failures (sync throw, rejected promise, unserializable value)
+  are logged via console.error and never fail the triggering update: memory
+  stays authoritative, and the write runs inside Legend's change dispatch,
+  where a throw would corrupt it (see Reactions).
+- **Persisted atoms hold plain JSON data**: strings, finite numbers, booleans,
+  null, plain objects, arrays (`undefined` reads the same as an absent key).
+  Anything JSON would silently reshape — a Date into a string, a Map/Set/class
+  instance into `{}`, NaN into null — would hydrate as a different type, so
+  the write is refused and logged, naming the path (`cart.at is not plain JSON
+  data (got Date)`); storage keeps its last good value. Store a Date as an ISO
+  string or epoch ms. Same contract as query args, but logged rather than
+  thrown, because the write runs inside the change dispatch. Checked in the
+  stringify pass itself — no second traversal.
 
 ### Hydration
 
@@ -88,6 +101,13 @@ tick later. Hydration status is exposed via `hydrationOf(cart)` (an observable �
 attaching properties to a Legend proxy would create a state child.) On RN,
 prefer MMKV: hydration is synchronous and this concern disappears — verified:
 with sync storage the atom is hydrated before `atom()` returns.
+
+**Writes made before an async read settles win.** They already went through
+to storage, so the stored value is discarded instead of being applied over
+them — memory and storage always converge (a logout's `resetAll()` inside the
+window stays reset in both). The record's `source` is `'initial'`: nothing came
+from storage. If stored state must survive, gate on `hydrated()` before
+writing.
 
 ### Test reset
 
@@ -132,7 +152,11 @@ export const overdueCount = selector(
 )
 ```
 
-Backed by Legend computeds: lazy, glitch-free within a batch.
+Backed by Legend computeds: lazy, glitch-free within a batch. A selector holds
+its dependencies only while observed: a raw Legend computed keeps its
+dependency listeners forever once read, so the selector drops them when its
+last observer leaves, and the next read re-activates and recomputes. That is
+what lets an observed selector drive a query's lifecycle (see Queries).
 
 - **The combiner is a pure function of its inputs** — unit-testable with plain
   values, no store, no mocks. Dependencies are static and greppable, and there's
@@ -166,7 +190,9 @@ Backed by Legend computeds: lazy, glitch-free within a batch.
   ```
 
   Entries evict by refCount when the last observer unsubscribes (with a short
-  keep-alive grace so list re-renders don't thrash).
+  keep-alive grace so list re-renders don't thrash). Eviction also releases
+  the entry's hold on its inner selector (and any query under it); a caller
+  still holding an evicted node re-activates it on its next read or observe.
 - **Output equality**: default is reference equality; opt-in comparator as a
   trailing option `selector(...deps, combiner, { equals: shallowEqual })` so
   structurally-equal recomputes don't notify.
@@ -250,6 +276,15 @@ invalidate(libraryBooks)                                // or invalidate(library
   node identity (same args → same node → one request), gc out of refCount
   eviction, stale-while-revalidate out of activation. Dynamic keys use the
   thunk selector (the sanctioned escape hatch).
+  **Observation is transitive through selectors**: `useValue(selector(q(k).data,
+  …))` activates the key, and unmounting it deactivates the key (gc clock,
+  revalidate-on-return) exactly like observing the node directly. A
+  `selectorFamily` entry holds its inner selector through the family's
+  keep-alive grace and releases it at eviction, so the key deactivates
+  `graceMs` after the entry's last observer leaves. Residual gaps, where the
+  key stays active until something observes it and leaves: a selector read
+  imperatively (`.get()` with no observer ever attached), and a raw Legend
+  computed or `observable(() => …)` over a query node.
 - **The bright line** (what earns machinery vs. stays a recipe): identity,
   lifecycle, staleness, dedupe, invalidation, structural sharing are core.
   `enabled`, keep-previous (six-line temporal-gating recipe gating on
@@ -271,6 +306,10 @@ invalidate(libraryBooks)                                // or invalidate(library
   expects data to reset on error — it doesn't, deliberately: the user keeps
   reading the last good list while the banner shows the failure.
   (Dogfood-tripped: the opacity migration's own suite asserted the reset.)
+  A fetcher that throws synchronously settles exactly like a rejection (it
+  never wedges the key in flight), and object errors are marked opaque so
+  `.error` subscribers see an `Error` land even though it has no enumerable
+  keys for Legend to diff.
 - **`statusOf` exists for command events only** — `statusOf(commandEvent)` →
   `{ pending, inFlight, error }` (exhaust-coalesced re-fires stay truthful;
   switch supersessions are not errors). Events need an accessor because a
@@ -442,7 +481,20 @@ Known implementation requirements (validated in Phase 0):
   keep the containing array's identity — propagating identity upward would
   replace every ancestor and destroy targeted re-renders. Identity tracks
   structure, not content: memo on identity for add/remove, derive through a
-  selector to react to item edits.
+  selector to react to item edits. Reorders are structure too (2026-09-30):
+  Immer emits a sort, reverse or swap as index-only replaces, which used to
+  set in place and kept the old identity. Consecutive ops on one array now
+  fold into ONE fresh array (a splice's replaces + trailing remove included —
+  also cheaper: one set instead of n); only a lone index replace (one item
+  swapped for another: content) sets in place. Fast atoms keep runs of index
+  replaces and appends in place.
+- **Legend never holds a value a patch or caller holds** (2026-09-30).
+  Immer's patches share non-draft values (a caller's payload, a fresh
+  literal) by reference, and Legend mutates its raw state in place — so a
+  later leaf write rewrote the recorded forward patch (history, devtools,
+  redo) and the caller's object. Patch values are deep-copied on the way into
+  Legend (plain objects, arrays, Map, Set — what Immer's own applyPatches
+  copies); the patch log stays facts.
 - **All-or-nothing for free**: patches are computed before anything applies, so a
   recipe that throws is a clean no-op. Updates are more transactional than they look.
 - **Every invocation returns a one-shot `Undo` thunk** (added in the mutation
@@ -453,8 +505,26 @@ Known implementation requirements (validated in Phase 0):
   inverse is the redo), so rollbacks are on the timeline and causally
   attributed when called inside an event handler. Surgical by construction:
   later writes to *other* leaves survive a rollback (leaf-level
-  last-writer-wins — the property snapshot-restore can't offer). One-shot
-  because an insert's inverse is a remove, and removing twice eats a
+  last-writer-wins — the property snapshot-restore can't offer).
+  Immer's array patches are positional, so an array the update restructured
+  (index ops or a wholesale array replace) is **rebased by item identity**
+  (2026-09-30): the undo computes the array from its CURRENT value — items
+  the update inserted leave, items it removed return after their nearest
+  surviving predecessor, its reorder is reverted within the slots those items
+  hold now, an item it replaced reverts unless rewritten since — and
+  everything else keeps its current value (later inserts, removes and edits
+  to other items survive). Identity is `id` (the value, for primitives), unique
+  per array; leaf undos inside id-keyed items follow their item to its current
+  index (and are dropped if it was deleted since). The `.undo` record carries
+  the rebased patches (a replace of the whole array; its redo replaces it back).
+  Remaining limits: without unique ids an array is matched by position, sound
+  only while its length is unchanged since — otherwise the positional inverse
+  applies with a console.warn and may overwrite later edits; leaf paths through
+  id-less items stay positional; an item the update both replaced and someone
+  rewrote since keeps the later write with ids and reverts without
+  (item-level, not leaf-level, either way); a wholesale OBJECT replace
+  (`d.cfg = {...}`) restores the whole object. One-shot because an insert's
+  inverse is a remove, and removing twice eats a
   neighbor; a spent thunk warns and no-ops. This is the optimistic-update
   primitive (see Mutations).
 - **Hot-path escape hatch**: Immer proxying is a per-frame tax at 60fps.
@@ -493,9 +563,11 @@ addInterceptor({
 ```
 
 Events surface their lifecycle on the same list: `onEventFire` (once per
-LOGICAL run — exhaust-coalesced calls don't re-fire), `onEventError`, and
+LOGICAL run — exhaust-coalesced calls don't re-fire), `onEventError` (real
+failures only — a switch-superseded rejection is not reported),
 `onEventSettle` (added 2026-07-17: once per run on the FINAL outcome after
-retries, with the superseded flag and the run's own args array —
+retries, with the superseded flag, an explicit `rejected` flag (a run can
+reject with `undefined`, so `error` alone can't tell), and the run's own args array —
 reference-equal to onEventFire's, so fire/settle pair by identity across
 overlapping runs). Settle is what makes an auto-span interceptor possible:
 fire+error alone can't close a span on success. The opacity migration's
@@ -641,6 +713,10 @@ reaction('cart/freeShipping', overLimit, over => {
   throw: Phase 1 verified empirically that an exception thrown through
   Legend's notification dispatch corrupts its internal state (observers
   registered afterwards go dead).
+- **A throwing react function is contained the same way.** An error from the
+  react body (a throwing update recipe, a `before` veto, a throwing
+  interceptor) is caught and reported via console.error; it never propagates
+  to the `set` that triggered the reaction.
 
 ---
 

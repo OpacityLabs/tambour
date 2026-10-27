@@ -101,6 +101,21 @@ describe('event retry', () => {
     expect(s.error).toBeUndefined() // superseded failure not recorded
     expect(s.success).toBe(true) // the surviving run's outcome
   })
+
+  it('switch: supersession wakes a backoff sleep — pending clears when the winner settles', async () => {
+    const load = event('r/switchWake', async (id: string, _signal: AbortSignal) => {
+      if (id === 'a') throw new Error('a fails')
+      return 'b ok'
+    }, { concurrency: 'switch', retry: 1, retryDelay: 300 })
+
+    const pa = load('a').catch(e => e)
+    await sleep(10) // 'a' is in its 300ms backoff
+    await expect(load('b')).resolves.toBe('b ok')
+    await sleep(10) // far short of a's backoff window
+
+    expect(statusOf(load).get()).toMatchObject({ pending: false, inFlight: 0, success: true })
+    expect((await pa) instanceof Error).toBe(true)
+  })
 })
 
 describe('event timeout', () => {

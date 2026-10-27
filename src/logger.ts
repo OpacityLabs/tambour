@@ -330,7 +330,7 @@ export function logInterceptor(options: LogInterceptorOptions = {}): () => void 
     }
   }
 
-  function printSettle(name: string, error: unknown, superseded: boolean, start: number | undefined): void {
+  function printSettle(name: string, error: unknown, superseded: boolean, rejected: boolean, start: number | undefined): void {
     const ms = start !== undefined ? ` ${Math.max(0, Math.round(now() - start))}ms` : ''
     let outcome: string
     let style: string
@@ -338,7 +338,7 @@ export function logInterceptor(options: LogInterceptorOptions = {}): () => void 
     if (superseded) {
       outcome = `⊘ superseded${ms}`
       style = STYLE.muted
-    } else if (error !== undefined) {
+    } else if (rejected) {
       outcome = `✗${ms} ${errorText(error)}`
       style = STYLE.fail
       sink = emitError
@@ -353,7 +353,7 @@ export function logInterceptor(options: LogInterceptorOptions = {}): () => void 
   /** `accounts("professional")` — the composite that fills the name column. */
   function queryLabel(name: string, keyArgs: unknown[] | 'all'): string {
     if (keyArgs === 'all') return `${name}(*)`
-    const keyText = masked(name) ? ' [redacted]' : previewArgs(keyArgs, depth)
+    const keyText = masked(name) ? ' [redacted]' : previewArgs(mapArgs(name, keyArgs), depth)
     return `${name}${keyText}`
   }
 
@@ -458,11 +458,11 @@ export function logInterceptor(options: LogInterceptorOptions = {}): () => void 
       if (k === 'event') starts.set(args, now())
       if (shows(k, name)) printFire(k, name, args)
     }),
-    onEventSettle: (name, error, args, superseded) => {
+    onEventSettle: (name, error, args, superseded, rejected) => {
       const start = starts.get(args)
       starts.delete(args)
       guard(() => {
-        if (shows('event', name)) printSettle(name, error, superseded, start)
+        if (shows('event', name)) printSettle(name, error, superseded, rejected, start)
       })
     },
     // a circuit-broken loop is a bug, not timeline noise — always printed
