@@ -99,5 +99,11 @@ function guarded(name: string, fn: () => void): void {
     }
     return   // circuit-break: skip the run so the cascade dies out
   }
-  fn()
+  // Same hazard for the react function itself: a throwing update recipe,
+  // `before` veto, or interceptor must not escape into Legend's dispatch.
+  try {
+    fn()
+  } catch (error) {
+    console.error(`[tambour] reaction '${name}' threw:`, error)
+  }
 }

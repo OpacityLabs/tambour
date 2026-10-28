@@ -16,7 +16,7 @@ not API.
 | Epic, server write consumed by a screen | `mutation` — carried `.status` replaces the slice's status fields; `invalidates` where a query depends on the write |
 | Epic, polling loop | streamEvents + `interval` pipeline (recipe below) |
 | Epic chain (A-success → B) | sequential code in ONE handler |
-| Selector (field read) | direct node read: `use$(profile$.profile)` |
+| Selector (field read) | direct node read: `useValue(profile.profile)` |
 | `createSelector` | `selector()` |
 | RTK Query endpoint | `query()` family — keyed envelope, `invalidate()` |
 | redux-persist | per-atom persist + the legacy-import recipe below |
@@ -34,7 +34,7 @@ The audit principles that shaped every opacity phase, in force order:
 
 1. **Status bookkeeping doesn't migrate.** `isLoading`/`error`/`isFetching`
    fields exist because Redux has no command layer. They become
-   `statusOf(event)`, a mutation's carried `.status`, or the query
+   the event's carried `.status` node, or the query
    envelope — never atom fields. (One legitimate exception found in nine
    phases: a lifecycle that spans TWO commands — opacity's submission
    status covers submit + poll — keeps a domain status field.)

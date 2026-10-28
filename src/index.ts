@@ -6,6 +6,7 @@ export {
   clearRegistry,
   hydrated,
   hydrationOf,
+  hydrationRecords,
   resetAll,
   restore,
   snapshot,
@@ -37,7 +38,21 @@ export {
 } from './events'
 export { reaction, type ReactionOptions } from './reaction'
 export { atomToStream } from './bridges'
-export { addInterceptor, type Interceptor, type UpdateRecord } from './interceptors'
+export {
+  addInterceptor,
+  type EventKind,
+  type HydrationRecord,
+  type Interceptor,
+  type QueryFetchReason,
+  type UpdateRecord,
+} from './interceptors'
 export { connectDevtools, type DevtoolsConnector, type DevtoolsOptions } from './devtools'
 export { recordHistory, type History } from './history'
+export {
+  logInterceptor,
+  type LogInterceptorOptions,
+  type LoggerSink,
+  type LogKind,
+  type NameFilter,
+} from './logger'
 export type { Atom, ReadonlyNode, ReadonlyNodeBase } from './types'

@@ -15,24 +15,24 @@ describe('streamSelector: lazy activation', () => {
       return () => s.unsubscribe()
     })
 
-    const node$ = streamSelector<number>(wrapped)
+    const node = streamSelector<number>(wrapped)
     expect(subscribed).not.toHaveBeenCalled()   // nothing observed yet
 
     const listener = vi.fn()
-    node$.onChange(listener)                    // first observation
-    node$.get()
+    node.onChange(listener)                    // first observation
+    node.get()
     expect(subscribed).toHaveBeenCalledTimes(1)
 
     source.next(42)
-    expect(node$.peek()).toBe(42)
+    expect(node.peek()).toBe(42)
   })
 
   it('default value is present before first emission', () => {
     const source = new Subject<number[]>()
-    const node$ = streamSelector(source.asObservable(), { default: [] as number[] })
-    expect(node$.get()).toEqual([])
+    const node = streamSelector(source.asObservable(), { default: [] as number[] })
+    expect(node.get()).toEqual([])
     source.next([1, 2])
-    expect(node$.peek()).toEqual([1, 2])
+    expect(node.peek()).toEqual([1, 2])
   })
 
   it('re-activates cleanly: observe -> dispose -> observe again', async () => {
@@ -43,22 +43,22 @@ describe('streamSelector: lazy activation', () => {
       const s = source.subscribe(sub)
       return () => s.unsubscribe()
     })
-    const node$ = streamSelector<number>(wrapped)
+    const node = streamSelector<number>(wrapped)
 
-    const d1 = node$.onChange(() => {})
-    node$.get()
+    const d1 = node.onChange(() => {})
+    node.get()
     expect(activations).toBe(1)
     source.next(1)
-    expect(node$.peek()).toBe(1)
+    expect(node.peek()).toBe(1)
 
     d1()                                          // last observer leaves
     await new Promise(r => setTimeout(r, 10))     // legend deactivation is async
 
-    const d2 = node$.onChange(() => {})           // observe again
-    node$.get()
+    const d2 = node.onChange(() => {})           // observe again
+    node.get()
     await new Promise(r => setTimeout(r, 10))     // re-subscription is ALSO async —
     source.next(2)                                // emissions during the gap are missed
-    expect(node$.peek()).toBe(2)                  // values flow after re-activation
+    expect(node.peek()).toBe(2)                  // values flow after re-activation
     expect(activations).toBe(2)                   // pipeline genuinely re-subscribed
     d2()
   })
@@ -70,41 +70,41 @@ describe('streamSelector: lazy activation', () => {
     // keepPrevious recipe; the survivor being an aliased raw row is the
     // worst case, so that's what we test.)
     const source = new Subject<{ id: string; n: number }[]>()
-    const node$ = streamSelector(source.asObservable(), {
+    const node = streamSelector(source.asObservable(), {
       default: [] as { id: string; n: number }[],
     })
-    node$.onChange(() => {})
-    node$.get()
+    node.onChange(() => {})
+    node.get()
 
     source.next([{ id: 'a', n: 1 }, { id: 'b', n: 2 }, { id: 'c', n: 3 }, { id: 'd', n: 4 }])
-    const survivor = (node$.peek() as any)[3] // same instance Legend holds internally
+    const survivor = (node.peek() as any)[3] // same instance Legend holds internally
     source.next([survivor])
-    expect(node$.peek()).toEqual([{ id: 'd', n: 4 }])
+    expect(node.peek()).toEqual([{ id: 'd', n: 4 }])
   })
 
   it('holds last value if the pipeline errors', () => {
     const source = new Subject<number>()
-    const node$ = streamSelector(source.asObservable())
-    node$.get()
+    const node = streamSelector(source.asObservable())
+    node.get()
     source.next(7)
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     source.error(new Error('boom'))
     spy.mockRestore()
-    expect(node$.peek()).toBe(7)
+    expect(node.peek()).toBe(7)
   })
 })
 
 describe('the glitch rule: combine in space with Legend, in time with Rx', () => {
   it('demonstrates that combineLatest over two atomToStreams glitches on a batch write', () => {
-    const a$ = observable(1) as any
-    const b$ = observable(10) as any
+    const a = observable(1) as any
+    const b = observable(10) as any
 
     const emissions: number[] = []
-    const sub = combineLatest([atomToStream<number>(a$), atomToStream<number>(b$)])
+    const sub = combineLatest([atomToStream<number>(a), atomToStream<number>(b)])
       .pipe(map(([a, b]) => a + b))
       .subscribe(v => emissions.push(v))
 
-    batch(() => { a$.set(2); b$.set(20) })
+    batch(() => { a.set(2); b.set(20) })
     sub.unsubscribe()
 
     // initial emission [1,10]=11, then... does the batch produce one emission (22)
@@ -115,15 +115,15 @@ describe('the glitch rule: combine in space with Legend, in time with Rx', () =>
   })
 
   it('a sync Legend computed over both atoms is glitch-free by batching', () => {
-    const a$ = observable(1) as any
-    const b$ = observable(10) as any
-    const sum$ = observable(() => a$.get() + b$.get()) as any
+    const a = observable(1) as any
+    const b = observable(10) as any
+    const sum = observable(() => a.get() + b.get()) as any
 
     const values: number[] = []
-    sum$.onChange(({ value }: any) => values.push(value))
-    sum$.get()
+    sum.onChange(({ value }: any) => values.push(value))
+    sum.get()
 
-    batch(() => { a$.set(2); b$.set(20) })
+    batch(() => { a.set(2); b.set(20) })
     console.log('[computed probe] notifications:', values)
     expect(values).toEqual([22])   // exactly one notification, no torn value
   })

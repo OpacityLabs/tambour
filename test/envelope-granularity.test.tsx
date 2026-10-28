@@ -7,7 +7,7 @@ import { query } from '../src/query'
 import { selector } from '../src/selector'
 import { streamSelector } from '../src/streamSelector'
 import { atomToStream } from '../src/bridges'
-import { use$ } from '../src/react'
+import { useValue } from '../src/react'
 
 afterEach(() => cleanup())
 
@@ -20,7 +20,7 @@ const rows = (key: string, n: number): Row[] =>
 /**
  * The showcase's exact shape: a thunk selector exposing the CURRENT key's
  * result envelope, with components subscribing to individual envelope fields
- * via path nodes: use$(state$.pending), use$(state$.data).
+ * via path nodes: useValue(state.pending), useValue(state.data).
  *
  * The claim under test: even though the envelope ROOT is replaced on every
  * change (new object reference each time), Legend diffs per child path — so a
@@ -28,8 +28,8 @@ const rows = (key: string, n: number): Row[] =>
  * silent while data (1,000 rows here), fetchedAt, and the root reference all
  * churn underneath it.
  */
-describe('envelope granularity through use$', () => {
-  it('use$(state$.pending) re-renders only on pending flips; data churn is invisible to it', async () => {
+describe('envelope granularity through useValue', () => {
+  it('useValue(state.pending) re-renders only on pending flips; data churn is invisible to it', async () => {
     const resolvers = new Map<string, (v: Row[]) => void>()
     const fetcher = (key: string) =>
       new Promise<Row[]>(res => {
@@ -37,21 +37,21 @@ describe('envelope granularity through use$', () => {
       })
     const books = query('gran/books', fetcher, { staleTime: 60_000, default: [] as Row[] })
 
-    const key$ = observable('a') as any
-    const state$ = selector(() => (books(key$.get()) as any).get()) as any
+    const key = observable('a') as any
+    const state = selector(() => (books(key.get()) as any).get()) as any
 
     const renders = { pending: 0, data: 0 }
     const pendingSeen: boolean[] = []
 
     function PendingProbe() {
       renders.pending++
-      const pending = use$(state$.pending) as boolean
+      const pending = useValue(state.pending) as boolean
       pendingSeen.push(pending)
       return <span data-testid="pending">{String(pending)}</span>
     }
     function DataProbe() {
       renders.data++
-      const data = use$(state$.data) as Row[]
+      const data = useValue(state.data) as Row[]
       return <span data-testid="data">{data.length}</span>
     }
 
@@ -86,7 +86,7 @@ describe('envelope granularity through use$', () => {
     // data changes (1000 → 500 rows), fetchedAt changes, the envelope root is
     // a brand-new object — but pending is false before AND after.
     await act(async () => {
-      key$.set('b')
+      key.set('b')
       await sleep(10)
     })
     expect(screen.getByTestId('data').textContent).toBe('500') // data subscriber saw it
@@ -95,7 +95,7 @@ describe('envelope granularity through use$', () => {
 
     // and back again — same story
     await act(async () => {
-      key$.set('a')
+      key.set('a')
       await sleep(10)
     })
     expect(screen.getByTestId('data').textContent).toBe('1000')
@@ -107,7 +107,7 @@ describe('envelope granularity through use$', () => {
     holdB()
   })
 
-  it('one component holding use$(state$.pending) AND use$(visible$) renders ONCE per change moment', async () => {
+  it('one component holding useValue(state.pending) AND useValue(visible) renders ONCE per change moment', async () => {
     const resolvers = new Map<string, (v: Row[]) => void>()
     const fetcher = (key: string) =>
       new Promise<Row[]>(res => {
@@ -115,24 +115,24 @@ describe('envelope granularity through use$', () => {
       })
     const books = query('gran/combined', fetcher, { staleTime: 60_000, default: [] as Row[] })
 
-    // the full showcase wiring, including the Rx hop (settled$ / keepPrevious)
-    const key$ = observable('a') as any
-    const state$ = selector(() => (books(key$.get()) as any).get()) as any
-    const settled$ = streamSelector(
-      atomToStream(state$).pipe(
+    // the full showcase wiring, including the Rx hop (settled / keepPrevious)
+    const key = observable('a') as any
+    const state = selector(() => (books(key.get()) as any).get()) as any
+    const settled = streamSelector(
+      atomToStream(state).pipe(
         filter((s: any) => !s.pending && !s.stale),
         map((s: any) => s.data as Row[]),
       ),
       { default: [] as Row[] },
     )
-    const visible$ = selector(() =>
-      [...(settled$ as any).get()].sort((a: Row, b: Row) => a.id - b.id),
+    const visible = selector(() =>
+      [...(settled as any).get()].sort((a: Row, b: Row) => a.id - b.id),
     ) as any
 
     const frames: { pending: boolean; count: number }[] = []
     function Combined() {
-      const pending = use$(state$.pending) as boolean
-      const list = use$(visible$) as Row[]
+      const pending = useValue(state.pending) as boolean
+      const list = useValue(visible) as Row[]
       frames.push({ pending, count: list.length })
       return <span data-testid="c">{String(pending)}:{list.length}</span>
     }
@@ -140,7 +140,7 @@ describe('envelope granularity through use$', () => {
     render(<Combined />)
     expect(frames).toEqual([{ pending: false, count: 0 }]) // 1: mount
 
-    // moment 2 — activation: only pending flips (settled$ gate holds books back)
+    // moment 2 — activation: only pending flips (settled gate holds books back)
     await waitFor(() => expect(screen.getByTestId('c').textContent).toBe('true:0'))
     expect(frames.length).toBe(2)
 

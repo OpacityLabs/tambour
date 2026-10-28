@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { atom, clearRegistry, hydrated, hydrationOf, resetAll } from '../src/atom'
+import { observable, observe } from '@legendapp/state'
+import { atom, clearRegistry, hydrated, hydrationOf, hydrationRecords, resetAll } from '../src/atom'
+import { addInterceptor, type HydrationRecord } from '../src/interceptors'
 import { asyncStorage, memoryStorage } from '../src/storage'
 import { update } from '../src/update'
 
@@ -10,17 +12,17 @@ const envelope = (data: unknown, v = 1) => JSON.stringify({ v, data })
 describe('persistence: sync storage (MMKV-style)', () => {
   it('hydrates synchronously at registration — no flash of initial state', () => {
     const storage = memoryStorage({ cart: envelope({ items: ['stored'], total: 5 }) })
-    const cart$ = atom('cart', { items: [] as string[], total: 0 }, { persist: { storage } })
+    const cart = atom('cart', { items: [] as string[], total: 0 }, { persist: { storage } })
 
-    expect(cart$.peek()).toEqual({ items: ['stored'], total: 5 })   // already hydrated
-    expect(hydrationOf(cart$).peek()).toBe(true)
+    expect(cart.peek()).toEqual({ items: ['stored'], total: 5 })   // already hydrated
+    expect(hydrationOf(cart).peek()).toBe(true)
   })
 
   it('missing stored value: initial state, hydrated immediately', () => {
     const storage = memoryStorage()
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage } })
-    expect(cart$.peek()).toEqual({ total: 0 })
-    expect(hydrationOf(cart$).peek()).toBe(true)
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })
+    expect(cart.peek()).toEqual({ total: 0 })
+    expect(hydrationOf(cart).peek()).toBe(true)
   })
 
   it('missing stored value: materializes the initial value to storage immediately', () => {
@@ -37,8 +39,8 @@ describe('persistence: sync storage (MMKV-style)', () => {
 
   it('writes through on every update, one write per batch', () => {
     const storage = memoryStorage()
-    const cart$ = atom('cart', { items: [] as string[], total: 0 }, { persist: { storage } })
-    const add = update('cart/add', { cart: cart$ }, (d, item: string) => {
+    const cart = atom('cart', { items: [] as string[], total: 0 }, { persist: { storage } })
+    const add = update('cart/add', { cart: cart }, (d, item: string) => {
       d.cart.items.push(item)
       d.cart.total += 1
     })
@@ -51,31 +53,31 @@ describe('persistence: sync storage (MMKV-style)', () => {
   })
 
   it('unpersisted atoms are always hydrated and never touch storage', () => {
-    const session$ = atom('session', { active: false })
-    expect(hydrationOf(session$).peek()).toBe(true)
+    const session = atom('session', { active: false })
+    expect(hydrationOf(session).peek()).toBe(true)
   })
 
   it('resetAll persists the initial value', () => {
     const storage = memoryStorage({ cart: envelope({ total: 9 }) })
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage } })
-    expect(cart$.total.peek()).toBe(9)
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })
+    expect(cart.total.peek()).toBe(9)
 
     resetAll()
-    expect(cart$.total.peek()).toBe(0)
+    expect(cart.total.peek()).toBe(0)
     expect(JSON.parse(storage.data.get('cart')!).data).toEqual({ total: 0 })
   })
 
   it('custom key overrides the atom name', () => {
     const storage = memoryStorage({ 'v2:cart': envelope({ total: 3 }) })
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage, key: 'v2:cart' } })
-    expect(cart$.total.peek()).toBe(3)
+    const cart = atom('cart', { total: 0 }, { persist: { storage, key: 'v2:cart' } })
+    expect(cart.total.peek()).toBe(3)
   })
 })
 
 describe('persistence: migrations', () => {
   it('replays stepwise migrations from the stored version', () => {
     const storage = memoryStorage({ cart: envelope({ total: 10 }, 1) })
-    const cart$ = atom('cart', { total: 0, coupon: null as string | null, currency: 'USD' }, {
+    const cart = atom('cart', { total: 0, coupon: null as string | null, currency: 'USD' }, {
       persist: {
         storage,
         version: 3,
@@ -85,7 +87,7 @@ describe('persistence: migrations', () => {
         },
       },
     })
-    expect(cart$.peek()).toEqual({ total: 10, coupon: null, currency: 'USD' })
+    expect(cart.peek()).toEqual({ total: 10, coupon: null, currency: 'USD' })
   })
 
   it('data already at the current version runs no migrations', () => {
@@ -99,10 +101,10 @@ describe('persistence: migrations', () => {
 
   it('subsequent writes are stamped with the current version', () => {
     const storage = memoryStorage({ cart: envelope({ total: 10 }, 1) })
-    const cart$ = atom('cart', { total: 0 }, {
+    const cart = atom('cart', { total: 0 }, {
       persist: { storage, version: 2, migrations: { 2: (d: any) => d } },
     })
-    const bump = update('cart/bump', { cart: cart$ }, d => { d.cart.total += 1 })
+    const bump = update('cart/bump', { cart: cart }, d => { d.cart.total += 1 })
     bump()
     expect(JSON.parse(storage.data.get('cart')!).v).toBe(2)
   })
@@ -112,8 +114,8 @@ describe('persistence: throttled write-through', () => {
   it('first change after a quiet period writes immediately (leading edge)', () => {
     vi.useFakeTimers()
     const storage = memoryStorage()
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
-    const bump = update('cart/bump', { cart: cart$ }, d => { d.cart.total += 1 })
+    const cart = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
+    const bump = update('cart/bump', { cart: cart }, d => { d.cart.total += 1 })
 
     bump()
     expect(JSON.parse(storage.data.get('cart')!).data).toEqual({ total: 1 })
@@ -124,8 +126,8 @@ describe('persistence: throttled write-through', () => {
     vi.useFakeTimers()
     const storage = memoryStorage()
     const setString = vi.spyOn(storage, 'setString')
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
-    const bump = update('cart/bump', { cart: cart$ }, d => { d.cart.total += 1 })
+    const cart = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
+    const bump = update('cart/bump', { cart: cart }, d => { d.cart.total += 1 })
     setString.mockClear()               // ignore the initial materialization write
 
     bump()                              // leading
@@ -143,8 +145,8 @@ describe('persistence: throttled write-through', () => {
   it('after the window passes quietly, the next change is leading again', () => {
     vi.useFakeTimers()
     const storage = memoryStorage()
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
-    const bump = update('cart/bump', { cart: cart$ }, d => { d.cart.total += 1 })
+    const cart = atom('cart', { total: 0 }, { persist: { storage, throttleMs: 500 } })
+    const bump = update('cart/bump', { cart: cart }, d => { d.cart.total += 1 })
 
     bump()
     vi.advanceTimersByTime(600)
@@ -167,23 +169,47 @@ describe('persistence: throttled write-through', () => {
 describe('persistence: async storage', () => {
   it('starts at initial, flips hydration when the read resolves', async () => {
     const storage = asyncStorage(memoryStorage({ cart: envelope({ total: 42 }) }))
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage } })
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })
 
-    expect(cart$.total.peek()).toBe(0)                 // not yet hydrated
-    expect(hydrationOf(cart$).peek()).toBe(false)
+    expect(cart.total.peek()).toBe(0)                 // not yet hydrated
+    expect(hydrationOf(cart).peek()).toBe(false)
 
     await hydrated()                                   // the PersistGate replacement
-    expect(cart$.total.peek()).toBe(42)
-    expect(hydrationOf(cart$).peek()).toBe(true)
+    expect(cart.total.peek()).toBe(42)
+    expect(hydrationOf(cart).peek()).toBe(true)
   })
 
   it('hydrated() aggregates multiple persisted atoms', async () => {
     const s = memoryStorage({ a: envelope({ v: 1 }), b: envelope({ v: 2 }) })
-    const a$ = atom('a', { v: 0 }, { persist: { storage: asyncStorage(s) } })
-    const b$ = atom('b', { v: 0 }, { persist: { storage: asyncStorage(s) } })
+    const a = atom('a', { v: 0 }, { persist: { storage: asyncStorage(s) } })
+    const b = atom('b', { v: 0 }, { persist: { storage: asyncStorage(s) } })
     await hydrated()
-    expect(a$.v.peek()).toBe(1)
-    expect(b$.v.peek()).toBe(2)
+    expect(a.v.peek()).toBe(1)
+    expect(b.v.peek()).toBe(2)
+  })
+
+  // Rule: a write made before the async read settles wins — the stored value
+  // is discarded, memory stays, and storage already holds memory.
+  it('a write during async hydration wins: memory and storage converge on it', async () => {
+    const inner = memoryStorage({ prefs: envelope({ theme: 'dark', lang: 'en' }) })
+    const prefs = atom('prefs', { theme: 'light', lang: 'en' }, { persist: { storage: asyncStorage(inner) } })
+    update('prefs/lang', { prefs }, d => { d.prefs.lang = 'fr' })()
+
+    await hydrated()
+    const stored = JSON.parse(inner.data.get('prefs')!).data
+    expect(prefs.peek()).toEqual({ theme: 'light', lang: 'fr' })
+    expect(stored).toEqual(prefs.peek())
+  })
+
+  it('resetAll during async hydration leaves memory and storage reset', async () => {
+    const inner = memoryStorage({ prefs: envelope({ theme: 'dark' }) })
+    const prefs = atom('prefs', { theme: 'light' }, { persist: { storage: asyncStorage(inner) } })
+    update('prefs/theme', { prefs }, d => { d.prefs.theme = 'blue' })()
+    resetAll()                                          // logout inside the window
+
+    await hydrated()
+    expect(prefs.peek()).toEqual({ theme: 'light' })
+    expect(JSON.parse(inner.data.get('prefs')!).data).toEqual({ theme: 'light' })
   })
 })
 
@@ -191,10 +217,10 @@ describe('persistence: failure modes', () => {
   it('corrupted JSON: keeps initial state, still reports hydrated', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const storage = memoryStorage({ cart: '{not json' })
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage } })
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })
 
-    expect(cart$.total.peek()).toBe(0)
-    expect(hydrationOf(cart$).peek()).toBe(true)       // app is not blocked
+    expect(cart.total.peek()).toBe(0)
+    expect(hydrationOf(cart).peek()).toBe(true)       // app is not blocked
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('hydrate'), expect.anything())
     spy.mockRestore()
   })
@@ -206,10 +232,176 @@ describe('persistence: failure modes', () => {
       setString: () => {},
       remove: () => {},
     }
-    const cart$ = atom('cart', { total: 0 }, { persist: { storage } })
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })
     await hydrated()
-    expect(cart$.total.peek()).toBe(0)
-    expect(hydrationOf(cart$).peek()).toBe(true)
+    expect(cart.total.peek()).toBe(0)
+    expect(hydrationOf(cart).peek()).toBe(true)
     spy.mockRestore()
+  })
+
+  it('non-JSON values are refused: logged, never written as a lossy shape', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const storage = memoryStorage({ ev: envelope({ at: null, tags: [] }) })
+    const ev = atom('ev', { at: null as Date | null, tags: [] as unknown[] }, { persist: { storage } })
+    const before = storage.data.get('ev')
+
+    update('ev/at', { ev }, d => { d.ev.at = new Date(0) })()
+    update('ev/tags', { ev }, d => { d.ev = { at: null, tags: [new Map([['a', 1]])] } })()
+
+    expect(storage.data.get('ev')).toBe(before)        // no string-for-Date, no `{}`-for-Map
+    expect(spy).toHaveBeenCalledWith(
+      expect.stringContaining("'ev'"),
+      expect.objectContaining({ message: expect.stringMatching(/ev\.at is not plain JSON data \(got Date\)/) }),
+    )
+    expect(spy).toHaveBeenCalledWith(
+      expect.stringContaining("'ev'"),
+      expect.objectContaining({ message: expect.stringMatching(/ev\.tags\[0\] is not plain JSON data \(got Map\)/) }),
+    )
+    spy.mockRestore()
+  })
+})
+
+describe('persistence: hydration records + onHydrate', () => {
+  it('sync storage: onHydrate fires during atom(), record readable after', () => {
+    const records: HydrationRecord[] = []
+    const dispose = addInterceptor({ onHydrate: r => records.push(r) })
+    const storage = memoryStorage({ cart: envelope({ total: 5 }) })
+    atom('cart', { total: 0 }, { persist: { storage } })
+    dispose()
+
+    expect(records).toEqual([{ atomName: 'cart', source: 'storage', fromVersion: 1, toVersion: 1 }])
+    expect(hydrationRecords()).toEqual(records)
+  })
+
+  it('migration replay records the version span', () => {
+    const records: HydrationRecord[] = []
+    const dispose = addInterceptor({ onHydrate: r => records.push(r) })
+    const storage = memoryStorage({ cart: envelope({ total: 10 }, 1) })
+    atom('cart', { total: 0, coupon: null as string | null }, {
+      persist: { storage, version: 3, migrations: { 2: (d: any) => ({ ...d, coupon: null }), 3: (d: any) => d } },
+    })
+    dispose()
+    expect(records).toEqual([{ atomName: 'cart', source: 'storage', fromVersion: 1, toVersion: 3 }])
+  })
+
+  it('virgin key records source initial', () => {
+    const records: HydrationRecord[] = []
+    const dispose = addInterceptor({ onHydrate: r => records.push(r) })
+    atom('cart', { total: 0 }, { persist: { storage: memoryStorage() } })
+    dispose()
+    expect(records).toEqual([{ atomName: 'cart', source: 'initial' }])
+  })
+
+  it('corrupted JSON records the error; the atom kept its initial', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const records: HydrationRecord[] = []
+    const dispose = addInterceptor({ onHydrate: r => records.push(r) })
+    atom('cart', { total: 0 }, { persist: { storage: memoryStorage({ cart: '{not json' }) } })
+    dispose()
+    spy.mockRestore()
+    expect(records[0]).toMatchObject({ atomName: 'cart', source: 'initial' })
+    expect(records[0]!.error).toBeInstanceOf(SyntaxError)
+  })
+
+  it('async storage: no record until the read settles, then the hook fires', async () => {
+    const records: HydrationRecord[] = []
+    const dispose = addInterceptor({ onHydrate: r => records.push(r) })
+    const storage = asyncStorage(memoryStorage({ cart: envelope({ total: 42 }) }))
+    atom('cart', { total: 0 }, { persist: { storage } })
+
+    expect(records).toEqual([])
+    expect(hydrationRecords()).toEqual([])            // read still in flight
+
+    await hydrated()
+    dispose()
+    expect(records).toEqual([{ atomName: 'cart', source: 'storage', fromVersion: 1, toVersion: 1 }])
+    expect(hydrationRecords()).toEqual(records)
+  })
+
+  it('async read rejection records the error', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const records: HydrationRecord[] = []
+    const dispose = addInterceptor({ onHydrate: r => records.push(r) })
+    const storage = {
+      getString: () => Promise.reject(new Error('disk gone')),
+      setString: () => {},
+      remove: () => {},
+    }
+    atom('cart', { total: 0 }, { persist: { storage } })
+    await hydrated()
+    dispose()
+    spy.mockRestore()
+    expect(records[0]).toMatchObject({ atomName: 'cart', source: 'initial' })
+    expect((records[0]!.error as Error).message).toBe('disk gone')
+  })
+
+  it('a throwing onHydrate interceptor is contained — hydration completes', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const dispose = addInterceptor({ onHydrate: () => { throw new Error('boom') } })
+    const storage = memoryStorage({ cart: envelope({ total: 5 }) })
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })
+    dispose()
+    expect(cart.total.peek()).toBe(5)
+    expect(hydrationOf(cart).peek()).toBe(true)
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('onHydrate'), expect.anything())
+    spy.mockRestore()
+  })
+
+  it('unpersisted atoms produce no records', () => {
+    atom('session', { active: false })
+    expect(hydrationRecords()).toEqual([])
+  })
+})
+
+describe('persistence: write-through failures are contained', () => {
+  it('a throwing sync setString: the set succeeds, memory holds, other observers keep working', () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let failWrites = false
+    const storage = {
+      getString: () => envelope({ total: 1 }),
+      setString: () => { if (failWrites) throw new Error('disk full') },
+      remove: () => {},
+    }
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })
+    const setTotal = update('cart/set', { cart: cart }, (d, v: number) => { d.cart.total = v })
+    failWrites = true
+
+    expect(() => setTotal(9)).not.toThrow()
+    expect(cart.total.peek()).toBe(9)
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('cart'), expect.objectContaining({ message: 'disk full' }))
+
+    const other = observable(0)
+    const seen: number[] = []
+    observe(() => { seen.push(other.get()) })
+    other.set(1)
+    expect(seen).toEqual([0, 1])
+    errSpy.mockRestore()
+  })
+
+  it('an async rejecting setString produces no unhandled rejection', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+    // no @types/node in this package: type just the listener API we use
+    type Listener = (reason: unknown) => void
+    type NodeGlobal = { process: { on(e: string, l: Listener): void; off(e: string, l: Listener): void } }
+    const nodeGlobal = globalThis as unknown as NodeGlobal   // vitest runs under node
+    const proc = nodeGlobal.process
+    proc.on('unhandledRejection', onUnhandled)
+    const storage = {
+      getString: () => null,
+      setString: () => Promise.reject(new Error('quota')),
+      remove: () => {},
+    }
+    const cart = atom('cart', { total: 0 }, { persist: { storage } })   // materializes: first rejection
+    const setTotal = update('cart/set', { cart: cart }, (d, v: number) => { d.cart.total = v })
+    setTotal(3)                                                         // write-through: second
+    await new Promise(r => setTimeout(r, 10))
+    proc.off('unhandledRejection', onUnhandled)
+
+    expect(unhandled).toEqual([])
+    expect(cart.total.peek()).toBe(3)
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('cart'), expect.objectContaining({ message: 'quota' }))
+    errSpy.mockRestore()
   })
 })

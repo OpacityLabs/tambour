@@ -11,17 +11,17 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers())
 
 function makeTodos() {
-  const todos$ = atom('todos', {
+  const todos = atom('todos', {
     items: [{ id: 'a', qty: 1 }, { id: 'b', qty: 2 }],
   })
   const todoById = selectorFamily((id: string) =>
-    selector(todos$.items, items => items.find(t => t.id === id)),
+    selector(todos.items, items => items.find(t => t.id === id)),
   )
-  const setQty = update('todos/setQty', { t: todos$ }, (d, id: string, qty: number) => {
+  const setQty = update('todos/setQty', { t: todos }, (d, id: string, qty: number) => {
     const item = d.t.items.find((t: { id: string; qty: number }) => t.id === id)
     if (item) item.qty = qty
   })
-  return { todos$, todoById, setQty }
+  return { todos, todoById, setQty }
 }
 
 describe('selectorFamily', () => {
@@ -69,9 +69,9 @@ describe('selectorFamily', () => {
   })
 
   it('multi-arg keys work', () => {
-    const grid$ = atom('grid', { rows: [[1, 2], [3, 4]] })
+    const grid = atom('grid', { rows: [[1, 2], [3, 4]] })
     const cell = selectorFamily((r: number, c: number) =>
-      selector(grid$.rows, rows => rows[r]?.[c]),
+      selector(grid.rows, rows => rows[r]?.[c]),
     )
     expect(cell(0, 1).get()).toBe(2)
     expect(cell(1, 0).get()).toBe(3)

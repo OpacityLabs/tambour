@@ -42,6 +42,12 @@ describe('event: a named awaitable command', () => {
     const bad = event('test/syncThrow', (): number => { throw new Error('sync') })
     await expect(bad()).rejects.toThrow('sync')
   })
+
+  it('a rejection with undefined is recorded as a failure, not success', async () => {
+    const u = event('test/undefinedReject', async () => { throw undefined })
+    await expect(u()).rejects.toBeUndefined()
+    expect(u.status.get()).toMatchObject({ pending: false, success: false, error: undefined })
+  })
 })
 
 describe('event: concurrency policies', () => {
@@ -73,6 +79,36 @@ describe('event: concurrency policies', () => {
     await Promise.all([p1, p2])
     expect(outcomes).toEqual(['a:aborted', 'b:done'])
   })
+
+  it('exhaust: a re-entrant fire during the handler sync prefix coalesces', async () => {
+    let runs = 0
+    const ex = event('test/reentrant', async () => {
+      runs++
+      if (runs === 1) ex() // re-fire before the first await
+      await tick()
+    }, { concurrency: 'exhaust' })
+
+    await ex()
+    await tick()
+    expect(runs).toBe(1)
+  })
+
+  it('switch: a superseded rejection does not reach onEventError', async () => {
+    const seen: unknown[] = []
+    const off = addInterceptor({ onEventError: (name, err) => seen.push(err) })
+    const load = event('test/switchErr', async (id: string, signal: AbortSignal) => {
+      await tick()
+      if (signal.aborted) throw new Error(`${id} aborted`)
+      return id
+    }, { concurrency: 'switch' })
+
+    const p1 = load('a').catch(e => e)
+    await expect(load('b')).resolves.toBe('b')
+    expect(await p1).toEqual(new Error('a aborted')) // caller still sees it
+    await tick()
+    expect(seen).toEqual([])
+    off()
+  })
 })
 
 describe('streamEvent + eventToStream', () => {
@@ -102,8 +138,8 @@ describe('streamEvent + eventToStream', () => {
 
 describe('causal attribution', () => {
   it('updates called synchronously inside a handler carry the event as origin', async () => {
-    const a$ = atom('a', { v: 0 })
-    const setV = update('a/set', { a: a$ }, (d, v: number) => { d.a.v = v })
+    const a = atom('a', { v: 0 })
+    const setV = update('a/set', { a: a }, (d, v: number) => { d.a.v = v })
     const origins: (string | null)[] = []
     const off = addInterceptor({ after: r => origins.push(r.origin) })
 
@@ -118,34 +154,34 @@ describe('causal attribution', () => {
 
 describe('update hardening', () => {
   it('before interceptor can veto: recipe never runs, atoms untouched', () => {
-    const a$ = atom('a', { v: 1 })
+    const a = atom('a', { v: 1 })
     const recipe = vi.fn((d: any) => { d.a.v = 99 })
-    const setV = update('a/set', { a: a$ }, recipe)
+    const setV = update('a/set', { a: a }, recipe)
     const off = addInterceptor({
       before: name => { if (name === 'a/set') throw new Error('vetoed') },
     })
 
     expect(() => setV()).toThrow('vetoed')
     expect(recipe).not.toHaveBeenCalled()
-    expect(a$.v.peek()).toBe(1)
+    expect(a.v.peek()).toBe(1)
     off()
   })
 
   it('reads scope: readable on the draft, but writing to it throws cleanly', () => {
-    const cart$ = atom('cart', { total: 10 })
-    const settings$ = atom('settings', { taxRate: 0.1 })
+    const cart = atom('cart', { total: 10 })
+    const settings = atom('settings', { taxRate: 0.1 })
 
     const applyTax = update('cart/applyTax',
-      { writes: { cart: cart$ }, reads: { settings: settings$ } },
+      { writes: { cart: cart }, reads: { settings: settings } },
       (d) => { d.cart.total = d.cart.total * (1 + d.settings.taxRate) })
     applyTax()
-    expect(cart$.total.peek()).toBeCloseTo(11)
+    expect(cart.total.peek()).toBeCloseTo(11)
 
     const corrupt = update('cart/corrupt',
-      { writes: { cart: cart$ }, reads: { settings: settings$ } },
+      { writes: { cart: cart }, reads: { settings: settings } },
       (d) => { d.settings.taxRate = 0.5 })
     expect(() => corrupt()).toThrow(/wrote to 'settings'/)
-    expect(settings$.taxRate.peek()).toBe(0.1)   // untouched
+    expect(settings.taxRate.peek()).toBe(0.1)   // untouched
   })
 })
 
@@ -258,6 +294,24 @@ describe('onEventSettle: the interceptor settle seam', () => {
 
     expect(fires).toBe(1)
     expect(settles).toBe(0)
+    off()
+  })
+
+  it('rejected distinguishes a rejection with undefined from a clean settle', async () => {
+    const settles: { name: string; error: unknown; rejected: boolean }[] = []
+    const off = addInterceptor({
+      onEventSettle: (name, error, _a, _s, rejected) => settles.push({ name, error, rejected }),
+    })
+    const bad = event('settle/undef', async () => { throw undefined })
+    const good = event('settle/ok', async () => undefined)
+
+    await bad().catch(() => {})
+    await good()
+    await tick()
+    expect(settles).toEqual([
+      { name: 'settle/undef', error: undefined, rejected: true },
+      { name: 'settle/ok', error: undefined, rejected: false },
+    ])
     off()
   })
 

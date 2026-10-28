@@ -15,7 +15,7 @@ different axes. Redux adds a third:
 
 | Axis | Technology | What it controls |
 |---|---|---|
-| **Where** | Legend State | Spatial granularity — per-node subscriptions; only the component reading `cart$.total` re-renders |
+| **Where** | Legend State | Spatial granularity — per-node subscriptions; only the component reading `cart.total` re-renders |
 | **When** | RxJS | Temporal granularity — which *moments* propagate (gating, debouncing, joining, distinctness) |
 | **What** | Redux (as discipline) | Which transitions are legal, named, and auditable |
 
@@ -39,7 +39,7 @@ Legend's observable tree, without giving up its performance.
 Plus two symmetric bridges — one idea ("anything can become a stream"), two functions:
 
 ```ts
-atomToStream(cart$.total)      // state node          → Observable<number>
+atomToStream(cart.total)      // state node          → Observable<number>
 eventToStream(searchInput)     // event / streamEvent → Observable<string> (payloads)
 ```
 
@@ -48,7 +48,7 @@ eventToStream(searchInput)     // event / streamEvent → Observable<string> (pa
 ## Atoms
 
 ```ts
-export const cart$ = atom('cart', { items: [] as Item[], total: 0, coupon: null })
+export const cart = atom('cart', { items: [] as Item[], total: 0, coupon: null })
 ```
 
 The name is a real registration, not a comment: it is the devtools identity, the
@@ -59,7 +59,7 @@ Every node underneath is independently observable — the atom is the unit of
 ### Persistence: the atom IS the boundary
 
 ```ts
-export const cart$ = atom('cart', initial, {
+export const cart = atom('cart', initial, {
   persist: {
     storage: mmkvStorage,        // MMKV on RN (sync!), IndexedDB/localStorage on web
     version: 3,
@@ -78,16 +78,36 @@ export const cart$ = atom('cart', initial, {
   updates span atoms atomically, selectors join across them invisibly.
 - Migrations are a stepwise map (redux-persist style): each migration is written
   once against a shape you knew at the time, never edited again.
+- Storage write failures (sync throw, rejected promise, unserializable value)
+  are logged via console.error and never fail the triggering update: memory
+  stays authoritative, and the write runs inside Legend's change dispatch,
+  where a throw would corrupt it (see Reactions).
+- **Persisted atoms hold plain JSON data**: strings, finite numbers, booleans,
+  null, plain objects, arrays (`undefined` reads the same as an absent key).
+  Anything JSON would silently reshape — a Date into a string, a Map/Set/class
+  instance into `{}`, NaN into null — would hydrate as a different type, so
+  the write is refused and logged, naming the path (`cart.at is not plain JSON
+  data (got Date)`); storage keeps its last good value. Store a Date as an ISO
+  string or epoch ms. Same contract as query args, but logged rather than
+  thrown, because the write runs inside the change dispatch. Checked in the
+  stringify pass itself — no second traversal.
 
 ### Hydration
 
 Async storage means an atom starts at its initial value and may be overwritten a
-tick later. Hydration status is exposed via `hydrationOf(cart$)` (an observable —
-`use$` it) and `await hydrated()` gates the app (the PersistGate replacement).
-(Originally spec'd as `cart$.hydrated$`; changed to an accessor because
+tick later. Hydration status is exposed via `hydrationOf(cart)` (an observable —
+`useValue` it) and `await hydrated()` gates the app (the PersistGate replacement).
+(Originally spec'd as `cart.hydrated`; changed to an accessor because
 attaching properties to a Legend proxy would create a state child.) On RN,
 prefer MMKV: hydration is synchronous and this concern disappears — verified:
 with sync storage the atom is hydrated before `atom()` returns.
+
+**Writes made before an async read settles win.** They already went through
+to storage, so the stored value is discarded instead of being applied over
+them — memory and storage always converge (a logout's `resetAll()` inside the
+window stays reset in both). The record's `source` is `'initial'`: nothing came
+from storage. If stored state must survive, gate on `hydrated()` before
+writing.
 
 ### Test reset
 
@@ -119,20 +139,24 @@ Test helper only — a live subscriber's node detaches from the cache.
 stream selectors), then a combiner that receives **plain values**:
 
 ```ts
-export const visibleTodos$ = selector(
-  todos$.items, todoUi$.filter,
+export const visibleTodos = selector(
+  todos.items, todoUi.filter,
   (items, filter) =>
     filter === 'all' ? items : items.filter(t => (filter === 'done') === t.done)
 )
 
 // composes: selectors as deps of selectors
-export const overdueCount$ = selector(
-  visibleTodos$, clock$.today,
+export const overdueCount = selector(
+  visibleTodos, clock.today,
   (todos, today) => todos.filter(t => t.due && t.due < today).length
 )
 ```
 
-Backed by Legend computeds: lazy, glitch-free within a batch.
+Backed by Legend computeds: lazy, glitch-free within a batch. A selector holds
+its dependencies only while observed: a raw Legend computed keeps its
+dependency listeners forever once read, so the selector drops them when its
+last observer leaves, and the next read re-activates and recomputes. That is
+what lets an observed selector drive a query's lifecycle (see Queries).
 
 - **The combiner is a pure function of its inputs** — unit-testable with plain
   values, no store, no mocks. Dependencies are static and greppable, and there's
@@ -144,29 +168,31 @@ Backed by Legend computeds: lazy, glitch-free within a batch.
 - **Types flow honestly through deps**: a `default`-less stream selector dep is
   `T | undefined` in the combiner's parameter — "not loaded yet" stays visible in
   the types.
-- **Most reads need no selector at all.** `use$(cart$.items[3].name)` is already
+- **Most reads need no selector at all.** `useValue(cart.items[3].name)` is already
   maximally targeted — Legend's granularity does the work. Selectors exist for
   *derivations* (computed values, joins), not access paths. Expect a handful per
   domain, not Redux's wall of them.
-- **React Compiler apps MUST use `useValue`, the compiler-safe alias of
-  `use$`** (found on-device 2026-07-17: the compiler and
-  eslint-plugin-react-hooks detect hooks by /^use[A-Z0-9]/ — `$` fails, so
-  components calling `use$` get memoized AROUND the call, hooks get skipped
+- **The read hook is `useValue` — deliberately NOT Legend's `use$` name**
+  (found on-device 2026-07-17: the compiler and eslint-plugin-react-hooks
+  detect hooks by /^use[A-Z0-9]/ — `$` fails, so components calling a
+  `use$`-named hook get memoized AROUND the call, hooks get skipped
   on re-render, and every screen crashes with hook-order errors at runtime.
   Headless bundles and non-React tests cannot catch it; the opacity gate
-  pass did). Same function, exported from `tambour/react`; any
-  /^use[A-Z0-9]/ import alias also works.
+  pass did). `use$` is no longer exported; see NAMING.md for the
+  convention this decided.
 - **Families** are a factory (reselect-factory / Recoil style), with a keyed cache:
 
   ```ts
   export const todoById = selectorFamily((id: string) =>
-    selector(todos$.items, items => items.find(t => t.id === id))
+    selector(todos.items, items => items.find(t => t.id === id))
   )
-  const todo = use$(todoById(id))   // same args → same cached node
+  const todo = useValue(todoById(id))   // same args → same cached node
   ```
 
   Entries evict by refCount when the last observer unsubscribes (with a short
-  keep-alive grace so list re-renders don't thrash).
+  keep-alive grace so list re-renders don't thrash). Eviction also releases
+  the entry's hold on its inner selector (and any query under it); a caller
+  still holding an evicted node re-activates it on its next read or observe.
 - **Output equality**: default is reference equality; opt-in comparator as a
   trailing option `selector(...deps, combiner, { equals: shallowEqual })` so
   structurally-equal recomputes don't notify.
@@ -180,7 +206,7 @@ systems that require values to be present. A stream selector is a node that simp
 *hasn't emitted yet*; emissions suppressed by the pipeline never touch React at all.
 
 ```ts
-export const searchResults$ = streamSelector(
+export const searchResults = streamSelector(
   eventToStream(searchInput).pipe(
     debounceTime(200),
     distinctUntilChanged(),
@@ -203,14 +229,14 @@ Contract:
   path *merges* keyed arrays — a shrinking emission (`[a,b,c,d] → [d]`) would
   corrupt the node to `[d,b,c,d]`. streamSelector pins `mode: 'set'`
   (found via the showcase app; regression in test/streamSelector.test.ts).
-- Components consume it with the same `use$` as everything else — call sites never
+- Components consume it with the same `useValue` as everything else — call sites never
   know whether a value is sync or temporal.
 
 ### The glitch rule
 
-RxJS is not glitch-free: one `update()` writing `a$` and `b$` in a single batch
-fires *separate* `onChange` events, so `combineLatest([atomToStream(a$),
-atomToStream(b$)])` emits a torn intermediate.
+RxJS is not glitch-free: one `update()` writing `a` and `b` in a single batch
+fires *separate* `onChange` events, so `combineLatest([atomToStream(a),
+atomToStream(b)])` emits a torn intermediate.
 
 **Combine in space with Legend, combine in time with Rx.** Join multiple atoms in a
 synchronous `selector` (glitch-free via batching), then wrap that one node in a
@@ -235,8 +261,8 @@ export const libraryBooks = query('library/books',
   { staleTime: 15_000, gcTime: 60_000, default: [] as Book[] })
 
 // the node's value IS the result envelope — data and metadata travel together
-const { data, pending } = use$(libraryBooks('austen'))  // observe = fetch if stale
-const books = use$(libraryBooks('austen').data)         // data-only subscription
+const { data, pending } = useValue(libraryBooks('austen'))  // observe = fetch if stale
+const books = useValue(libraryBooks('austen').data)         // data-only subscription
 invalidate(libraryBooks)                                // or invalidate(libraryBooks(args))
 ```
 
@@ -250,6 +276,15 @@ invalidate(libraryBooks)                                // or invalidate(library
   node identity (same args → same node → one request), gc out of refCount
   eviction, stale-while-revalidate out of activation. Dynamic keys use the
   thunk selector (the sanctioned escape hatch).
+  **Observation is transitive through selectors**: `useValue(selector(q(k).data,
+  …))` activates the key, and unmounting it deactivates the key (gc clock,
+  revalidate-on-return) exactly like observing the node directly. A
+  `selectorFamily` entry holds its inner selector through the family's
+  keep-alive grace and releases it at eviction, so the key deactivates
+  `graceMs` after the entry's last observer leaves. Residual gaps, where the
+  key stays active until something observes it and leaves: a selector read
+  imperatively (`.get()` with no observer ever attached), and a raw Legend
+  computed or `observable(() => …)` over a query node.
 - **The bright line** (what earns machinery vs. stays a recipe): identity,
   lifecycle, staleness, dedupe, invalidation, structural sharing are core.
   `enabled`, keep-previous (six-line temporal-gating recipe gating on
@@ -259,7 +294,7 @@ invalidate(libraryBooks)                                // or invalidate(library
   observation; `stale` is the synchronous "not yet trustworthy" signal.
 - **The envelope is the API**: a query node's value is `{ data, pending,
   stale, error, fetchedAt }`. Legend's granularity makes it free —
-  `use$(node.data)` never re-renders on a `fetchedAt` bump — and because data
+  `useValue(node.data)` never re-renders on a `fetchedAt` bump — and because data
   and status are ONE node written in ONE batch, a torn frame (fresh data +
   `pending: true`) is structurally impossible. Refetches apply structural
   sharing (deep-equal payloads keep old references → zero data notifications).
@@ -271,6 +306,10 @@ invalidate(libraryBooks)                                // or invalidate(library
   expects data to reset on error — it doesn't, deliberately: the user keeps
   reading the last good list while the banner shows the failure.
   (Dogfood-tripped: the opacity migration's own suite asserted the reset.)
+  A fetcher that throws synchronously settles exactly like a rejection (it
+  never wedges the key in flight), and object errors are marked opaque so
+  `.error` subscribers see an `Error` land even though it has no enumerable
+  keys for Legend to diff.
 - **`statusOf` exists for command events only** — `statusOf(commandEvent)` →
   `{ pending, inFlight, error }` (exhaust-coalesced re-fires stay truthful;
   switch supersessions are not errors). Events need an accessor because a
@@ -287,7 +326,7 @@ invalidate(libraryBooks)                                // or invalidate(library
   at the call site naming the query and the exact path. Accepted JSON
   equivalences: `{ a: undefined }` ≡ `{}`, array `undefined` ≡ `null`.
   Re-calling `family(args)` per render is the intended pattern (~µs hash →
-  same node → stable use$ subscription); hot paths hoist the call into a
+  same node → stable useValue subscription); hot paths hoist the call into a
   selector.
 - **Open items before freeze**: query-side fetch retry (the event
   retry/timeout vocabulary exists — see Events — and would wire into the
@@ -311,7 +350,7 @@ export const renameTodo = mutation('todos/rename',
   async (id: string, title: string) => { await api.renameTodo(id, title) },
   { invalidates: ([id]) => [todoList, todoDetail(id)] })
 
-const { pending, success, error } = use$(renameTodo.status)  // carried metadata
+const { pending, success, error } = useValue(renameTodo.status)  // carried metadata
 await renameTodo('t1', 'buy milk')                           // plain typed async
 ```
 
@@ -388,7 +427,7 @@ address** (`checkout/complete` may exist with no checkout atom).
 // checkout.updates.ts
 export const completeCheckout = update(
   'checkout/complete',
-  { cart: cart$, orders: orders$, user: user$ },      // declared write scope
+  { cart: cart, orders: orders, user: user },      // declared write scope
   (d, payment: Payment) => {
     d.orders.list.push(makeOrder(d.cart.items, payment))
     d.cart.items = []
@@ -408,14 +447,14 @@ completeCheckout(payment)   // one call, atomic across all three atoms
 - **Payloads are recipe arguments** (multiple args allowed, tuple-inferred by TS —
   better than RTK's single `action.payload`).
 - **Read-only participants**: `update(name, { writes: {...}, reads: { settings:
-  settings$ } }, recipe)` — reads arrive as plain snapshots; no accidental writes,
+  settings } }, recipe)` — reads arrive as plain snapshots; no accidental writes,
   no needless proxying, truthful log.
 - **Declared scope is tooling**: the log records `completeCheckout → wrote cart,
-  orders, user`; "what can write to `orders$`?" is a grep across `*.updates.ts`.
+  orders, user`; "what can write to `orders`?" is a grep across `*.updates.ts`.
 
 ### Mechanics: Immer patches → targeted sets
 
-Build a composite snapshot `{ cart: cart$.peek(), ... }`, run `produceWithPatches`,
+Build a composite snapshot `{ cart: cart.peek(), ... }`, run `produceWithPatches`,
 route each patch by `path[0]` to its atom, apply everything in one `batch()`. Legend
 never sees the discarded `next` — updates stay surgical per-leaf; inverse patches
 come free.
@@ -442,7 +481,20 @@ Known implementation requirements (validated in Phase 0):
   keep the containing array's identity — propagating identity upward would
   replace every ancestor and destroy targeted re-renders. Identity tracks
   structure, not content: memo on identity for add/remove, derive through a
-  selector to react to item edits.
+  selector to react to item edits. Reorders are structure too (2026-09-30):
+  Immer emits a sort, reverse or swap as index-only replaces, which used to
+  set in place and kept the old identity. Consecutive ops on one array now
+  fold into ONE fresh array (a splice's replaces + trailing remove included —
+  also cheaper: one set instead of n); only a lone index replace (one item
+  swapped for another: content) sets in place. Fast atoms keep runs of index
+  replaces and appends in place.
+- **Legend never holds a value a patch or caller holds** (2026-09-30).
+  Immer's patches share non-draft values (a caller's payload, a fresh
+  literal) by reference, and Legend mutates its raw state in place — so a
+  later leaf write rewrote the recorded forward patch (history, devtools,
+  redo) and the caller's object. Patch values are deep-copied on the way into
+  Legend (plain objects, arrays, Map, Set — what Immer's own applyPatches
+  copies); the patch log stays facts.
 - **All-or-nothing for free**: patches are computed before anything applies, so a
   recipe that throws is a clean no-op. Updates are more transactional than they look.
 - **Every invocation returns a one-shot `Undo` thunk** (added in the mutation
@@ -453,12 +505,30 @@ Known implementation requirements (validated in Phase 0):
   inverse is the redo), so rollbacks are on the timeline and causally
   attributed when called inside an event handler. Surgical by construction:
   later writes to *other* leaves survive a rollback (leaf-level
-  last-writer-wins — the property snapshot-restore can't offer). One-shot
-  because an insert's inverse is a remove, and removing twice eats a
+  last-writer-wins — the property snapshot-restore can't offer).
+  Immer's array patches are positional, so an array the update restructured
+  (index ops or a wholesale array replace) is **rebased by item identity**
+  (2026-09-30): the undo computes the array from its CURRENT value — items
+  the update inserted leave, items it removed return after their nearest
+  surviving predecessor, its reorder is reverted within the slots those items
+  hold now, an item it replaced reverts unless rewritten since — and
+  everything else keeps its current value (later inserts, removes and edits
+  to other items survive). Identity is `id` (the value, for primitives), unique
+  per array; leaf undos inside id-keyed items follow their item to its current
+  index (and are dropped if it was deleted since). The `.undo` record carries
+  the rebased patches (a replace of the whole array; its redo replaces it back).
+  Remaining limits: without unique ids an array is matched by position, sound
+  only while its length is unchanged since — otherwise the positional inverse
+  applies with a console.warn and may overwrite later edits; leaf paths through
+  id-less items stay positional; an item the update both replaced and someone
+  rewrote since keeps the later write with ids and reverts without
+  (item-level, not leaf-level, either way); a wholesale OBJECT replace
+  (`d.cfg = {...}`) restores the whole object. One-shot because an insert's
+  inverse is a remove, and removing twice eats a
   neighbor; a spent thunk warns and no-ops. This is the optimistic-update
   primitive (see Mutations).
 - **Hot-path escape hatch**: Immer proxying is a per-frame tax at 60fps.
-  Scoped updates (`update(name, { node: cart$.items[3] }, recipe)`) proxy only the
+  Scoped updates (`update(name, { node: cart.items[3] }, recipe)`) proxy only the
   subtree; `updateDirect` (raw batched sets, still named and logged) exists for
   drag/scroll/animation paths. Benchmark decides how loudly docs push this.
 - **Drafts are proxies — deep-equality helpers throw on them.** lodash
@@ -493,9 +563,11 @@ addInterceptor({
 ```
 
 Events surface their lifecycle on the same list: `onEventFire` (once per
-LOGICAL run — exhaust-coalesced calls don't re-fire), `onEventError`, and
+LOGICAL run — exhaust-coalesced calls don't re-fire), `onEventError` (real
+failures only — a switch-superseded rejection is not reported),
 `onEventSettle` (added 2026-07-17: once per run on the FINAL outcome after
-retries, with the superseded flag and the run's own args array —
+retries, with the superseded flag, an explicit `rejected` flag (a run can
+reject with `undefined`, so `error` alone can't tell), and the run's own args array —
 reference-equal to onEventFire's, so fire/settle pair by identity across
 overlapping runs). Settle is what makes an auto-span interceptor possible:
 fire+error alone can't close a span on success. The opacity migration's
@@ -559,7 +631,7 @@ make it an event; a one-line UI handler calling a single update needs no wrapper
 export const searchInput = streamEvent<string>('search/input')
 searchInput('groc')      // fires the payload; returns void — nothing to await
 
-export const searchResults$ = streamSelector(
+export const searchResults = streamSelector(
   eventToStream(searchInput).pipe(debounceTime(200), switchMap(q => from(api.search(q)))),
 )
 ```
@@ -612,9 +684,9 @@ awaited by its caller *and* observed by a pipeline, neither knowing about the ot
 Same shape as selectors — n deps, then a react function receiving plain values:
 
 ```ts
-const overLimit$ = selector(cart$.total, t => t > 100)
+const overLimit = selector(cart.total, t => t > 100)
 
-reaction('cart/freeShipping', overLimit$, over => {
+reaction('cart/freeShipping', overLimit, over => {
   if (over) applyFreeShipping()          // an update, an event fire, or a noop
 }, { immediate: true })
 ```
@@ -641,6 +713,10 @@ reaction('cart/freeShipping', overLimit$, over => {
   throw: Phase 1 verified empirically that an exception thrown through
   Legend's notification dispatch corrupts its internal state (observers
   registered afterwards go dead).
+- **A throwing react function is contained the same way.** An error from the
+  react body (a throwing update recipe, a `before` veto, a throwing
+  interceptor) is caught and reported via console.error; it never propagates
+  to the `set` that triggered the reaction.
 
 ---
 
@@ -671,8 +747,12 @@ checkout.events.ts    // event('checkout/...') — may exist with no checkout at
 checkout.updates.ts
 ```
 
-Lintable conventions: name prefix matches filename; "what writes to `orders$`?" is a
+Lintable conventions: name prefix matches filename; "what writes to `orders`?" is a
 grep across `*.updates.ts` write scopes.
+
+Identifier naming (nouns are state, verbs are actions, no `$` suffix on nodes —
+`$` is reserved for raw RxJS observables) is specified in NAMING.md, including
+the migration recipe for codebases written against the old `$` convention.
 
 ## Devtools
 
@@ -689,8 +769,9 @@ so devtools is *an interceptor that forwards to a UI*:
 
 ## Packaging
 
-Monorepo: `@tambour/state` (core), `@tambour/state-react` (thin: re-exports
-Legend's `use$`/`observer`, hydration gate, MMKV adapter), `@tambour/state-devtools`.
+Monorepo: `@tambour/state` (core), `@tambour/state-react` (thin: wraps Legend's
+`use$` as `useValue`, re-exports `observer`, hydration gate, MMKV adapter),
+`@tambour/state-devtools`.
 
 - `@legendapp/state` and `rxjs` are **peer dependencies** of core.
 - `streamSelector` accepts anything Observable-shaped (`Symbol.observable` interop) —

@@ -3,6 +3,7 @@ import { observable } from '@legendapp/state'
 import { filter, map } from 'rxjs/operators'
 import { query, invalidate, resetQueries, replaceEqualDeep, stableArgsKey } from '../src/query'
 import { selector } from '../src/selector'
+import { selectorFamily } from '../src/selectorFamily'
 import { streamSelector } from '../src/streamSelector'
 import { atomToStream } from '../src/bridges'
 
@@ -24,20 +25,20 @@ describe('query: pull activation', () => {
     const { fetcher, calls } = controlledFetcher<string[]>()
     const books = query('books', fetcher, { default: [] as string[] })
 
-    const node$ = books('austen') as any
+    const node = books('austen') as any
     expect(calls.length).toBe(0) // creating the node is not observing it
 
-    const dispose = node$.onChange(() => {})
-    expect(node$.get().data).toEqual([]) // default, synchronously
-    expect(node$.get().stale).toBe(true) // virgin key is stale from construction
+    const dispose = node.onChange(() => {})
+    expect(node.get().data).toEqual([]) // default, synchronously
+    expect(node.get().stale).toBe(true) // virgin key is stale from construction
     await tick()
     expect(calls.length).toBe(1)
     expect(calls[0]!.args).toEqual(['austen'])
-    expect(node$.get().pending).toBe(true)
+    expect(node.get().pending).toBe(true)
 
     calls[0]!.resolve(['Emma', 'Persuasion'])
     await tick()
-    const result = node$.get()
+    const result = node.get()
     expect(result.data).toEqual(['Emma', 'Persuasion'])
     expect(result.pending).toBe(false)
     expect(result.stale).toBe(false)
@@ -79,19 +80,19 @@ describe('query: staleness', () => {
     const { fetcher, calls } = controlledFetcher<number>()
     const q = query('fresh', fetcher, { staleTime: 10_000, gcTime: 10_000, default: 0 })
 
-    const node$ = q() as any
-    let dispose = node$.onChange(() => {})
-    node$.get()
+    const node = q() as any
+    let dispose = node.onChange(() => {})
+    node.get()
     await tick()
     calls[0]!.resolve(42)
     await tick()
-    expect(node$.get().data).toBe(42)
+    expect(node.get().data).toBe(42)
 
     dispose() // unobserve
     await sleep(20) // deactivation is async, but well under staleTime/gcTime
 
-    dispose = node$.onChange(() => {}) // re-observe
-    expect(node$.get().data).toBe(42) // cached value, synchronously
+    dispose = node.onChange(() => {}) // re-observe
+    expect(node.get().data).toBe(42) // cached value, synchronously
     await tick()
     expect(calls.length).toBe(1) // fresh → NO refetch
     dispose()
@@ -101,27 +102,27 @@ describe('query: staleness', () => {
     const { fetcher, calls } = controlledFetcher<number>()
     const q = query('swr', fetcher, { default: 0 }) // staleTime 0 = always stale
 
-    const node$ = q() as any
-    let dispose = node$.onChange(() => {})
-    node$.get()
+    const node = q() as any
+    let dispose = node.onChange(() => {})
+    node.get()
     await tick()
     calls[0]!.resolve(1)
     await tick()
-    expect(node$.get().data).toBe(1)
+    expect(node.get().data).toBe(1)
 
     dispose()
     await sleep(20)
 
-    dispose = node$.onChange(() => {})
-    expect(node$.get().data).toBe(1) // old value served instantly (SWR)
+    dispose = node.onChange(() => {})
+    expect(node.get().data).toBe(1) // old value served instantly (SWR)
     await tick()
     expect(calls.length).toBe(2) // background revalidation started
-    expect(node$.get().pending).toBe(true)
-    expect(node$.get().data).toBe(1) // still the old value while pending
+    expect(node.get().pending).toBe(true)
+    expect(node.get().data).toBe(1) // still the old value while pending
 
     calls[1]!.resolve(2)
     await tick()
-    expect(node$.get().data).toBe(2)
+    expect(node.get().data).toBe(2)
     dispose()
   })
 })
@@ -131,20 +132,20 @@ describe('query: invalidation', () => {
     const { fetcher, calls } = controlledFetcher<number>()
     const q = query('inv-active', fetcher, { staleTime: 60_000, default: 0 })
 
-    const node$ = q() as any
-    const dispose = node$.onChange(() => {})
-    node$.get()
+    const node = q() as any
+    const dispose = node.onChange(() => {})
+    node.get()
     await tick()
     calls[0]!.resolve(1)
     await tick()
 
-    invalidate(node$)
-    expect(node$.get().stale).toBe(true)
+    invalidate(node)
+    expect(node.get().stale).toBe(true)
     await tick()
     expect(calls.length).toBe(2) // refetched despite being fresh
     calls[1]!.resolve(2)
     await tick()
-    expect(node$.get().data).toBe(2)
+    expect(node.get().data).toBe(2)
     dispose()
   })
 
@@ -152,21 +153,21 @@ describe('query: invalidation', () => {
     const { fetcher, calls } = controlledFetcher<number>()
     const q = query('inv-idle', fetcher, { staleTime: 60_000, gcTime: 10_000, default: 0 })
 
-    const node$ = q() as any
-    let dispose = node$.onChange(() => {})
-    node$.get()
+    const node = q() as any
+    let dispose = node.onChange(() => {})
+    node.get()
     await tick()
     calls[0]!.resolve(1)
     await tick()
     dispose()
     await sleep(20)
 
-    invalidate(node$)
+    invalidate(node)
     await sleep(20)
     expect(calls.length).toBe(1) // nobody is watching: no fetch
 
-    dispose = node$.onChange(() => {})
-    expect(node$.get().data).toBe(1) // cached value still served
+    dispose = node.onChange(() => {})
+    expect(node.get().data).toBe(1) // cached value still served
     await tick()
     expect(calls.length).toBe(2) // revalidates on observation
     dispose()
@@ -276,29 +277,29 @@ describe('query: structural sharing', () => {
     const { fetcher, calls } = controlledFetcher<{ list: { id: number }[] }>()
     const q = query('shared', fetcher) // always stale
 
-    const node$ = q() as any
-    let dispose = node$.onChange(() => {})
-    node$.get()
+    const node = q() as any
+    let dispose = node.onChange(() => {})
+    node.get()
     await tick()
     calls[0]!.resolve({ list: [{ id: 1 }, { id: 2 }] })
     await tick()
-    const first = node$.data.get()
+    const first = node.data.get()
 
     dispose()
     await sleep(20)
-    dispose = node$.onChange(() => {})
-    node$.get()
+    dispose = node.onChange(() => {})
+    node.get()
     await tick()
     expect(calls.length).toBe(2)
 
     const dataNotifications: unknown[] = []
-    const d2 = node$.data.onChange(({ value }: any) => dataNotifications.push(value))
+    const d2 = node.data.onChange(({ value }: any) => dataNotifications.push(value))
     calls[1]!.resolve({ list: [{ id: 1 }, { id: 2 }] }) // same payload, new objects
     await tick()
 
-    expect(node$.data.get()).toBe(first) // identity preserved end to end
+    expect(node.data.get()).toBe(first) // identity preserved end to end
     expect(dataNotifications.length).toBe(0) // data-only subscribers never re-fire
-    expect(node$.get().fetchedAt).toBeTypeOf('number') // envelope DID advance
+    expect(node.get().fetchedAt).toBeTypeOf('number') // envelope DID advance
     dispose(); d2()
   })
 
@@ -318,12 +319,12 @@ describe('query: envelope atomicity', () => {
     const { fetcher, calls } = controlledFetcher<number>()
     const q = query('atomic', fetcher, { default: 0 })
 
-    const node$ = q() as any
+    const node = q() as any
     const frames: { data: number; pending: boolean }[] = []
-    const dispose = node$.onChange(({ value }: any) =>
+    const dispose = node.onChange(({ value }: any) =>
       frames.push({ data: value.data, pending: value.pending }),
     )
-    node$.get()
+    node.get()
     await tick()
 
     calls[0]!.resolve(7)
@@ -344,9 +345,9 @@ describe('query: gc', () => {
     const { fetcher, calls } = controlledFetcher<number>()
     const q = query('gc', fetcher, { staleTime: 60_000, gcTime: 30, default: 0 })
 
-    const node1$ = q() as any
-    let dispose = node1$.onChange(() => {})
-    node1$.get()
+    const node1 = q() as any
+    let dispose = node1.onChange(() => {})
+    node1.get()
     await tick()
     calls[0]!.resolve(1)
     await tick()
@@ -354,15 +355,15 @@ describe('query: gc', () => {
 
     await sleep(80) // > gcTime + async deactivation
 
-    const node2$ = q() as any
-    expect(node2$).not.toBe(node1$) // evicted: a NEW entry
-    dispose = node2$.onChange(() => {})
-    expect(node2$.get().data).toBe(0) // cached value is gone — default again
+    const node2 = q() as any
+    expect(node2).not.toBe(node1) // evicted: a NEW entry
+    dispose = node2.onChange(() => {})
+    expect(node2.get().data).toBe(0) // cached value is gone — default again
     await tick()
     expect(calls.length).toBe(2) // refetches despite generous staleTime
     calls[1]!.resolve(2)
     await tick()
-    expect(node2$.get().data).toBe(2)
+    expect(node2.get().data).toBe(2)
     dispose()
   })
 })
@@ -372,19 +373,19 @@ describe('query: errors', () => {
     const { fetcher, calls } = controlledFetcher<number>()
     const q = query('err', fetcher, { staleTime: 60_000, default: 0 })
 
-    const node$ = q() as any
-    let dispose = node$.onChange(() => {})
-    node$.get()
+    const node = q() as any
+    let dispose = node.onChange(() => {})
+    node.get()
     await tick()
     calls[0]!.resolve(1)
     await tick()
 
-    invalidate(node$)
+    invalidate(node)
     await tick()
     calls[1]!.reject(new Error('boom'))
     await tick()
 
-    const result = node$.get()
+    const result = node.get()
     expect(result.pending).toBe(false)
     expect((result.error as Error).message).toBe('boom')
     expect(result.stale).toBe(true)
@@ -392,15 +393,190 @@ describe('query: errors', () => {
 
     dispose()
     await sleep(20)
-    dispose = node$.onChange(() => {}) // re-observation retries despite staleTime
-    node$.get()
+    dispose = node.onChange(() => {}) // re-observation retries despite staleTime
+    node.get()
     await tick()
     expect(calls.length).toBe(3)
     calls[2]!.resolve(2)
     await tick()
-    expect(node$.get().data).toBe(2)
-    expect(node$.get().error).toBeUndefined()
+    expect(node.get().data).toBe(2)
+    expect(node.get().error).toBeUndefined()
     dispose()
+  })
+
+  it('an Error rejection notifies `.error` subscribers (key-less objects still count as a change)', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('err-child', fetcher, { default: 0 })
+    const node = q() as any
+    const seen: unknown[] = []
+    const dispose = node.error.onChange(({ value }: { value: unknown }) => seen.push(value))
+    await tick()
+    const boom = new Error('boom')
+    calls[0]!.reject(boom)
+    await tick()
+    expect(seen).toEqual([boom])
+    expect(seen[0]).toBe(boom) // the caller's error, by reference
+    dispose()
+  })
+
+  it('a fetcher that throws synchronously settles to error; a later invalidate refetches', async () => {
+    let fail = true
+    let n = 0
+    const q = query('sync-throw', (_k: number) => {
+      n++
+      if (fail) throw new Error('sync boom')
+      return Promise.resolve(7)
+    }, { staleTime: 60_000, default: 0 })
+
+    const node = q(1) as any
+    const dispose = node.onChange(() => {})
+    node.get()
+    await tick()
+    expect(n).toBe(1)
+    let result = node.get()
+    expect(result.pending).toBe(false) // not wedged in flight
+    expect((result.error as Error).message).toBe('sync boom')
+    expect(result.stale).toBe(true)
+
+    fail = false
+    expect(() => invalidate(q)).not.toThrow() // the throw no longer escapes the call site
+    await tick()
+    expect(n).toBe(2) // dedupe guard released: the key refetches
+    result = node.get()
+    expect(result.data).toBe(7)
+    expect(result.error).toBeUndefined()
+    dispose()
+  })
+})
+
+// A Legend computed keeps its dependency listeners after its own observers
+// leave; selectors release them, so observing THROUGH a selector drives the
+// entry's lifecycle exactly like observing the node directly.
+describe('query: lifecycle through selectors', () => {
+  it('re-observing a selector after staleTime revalidates; invalidate while unobserved does not fetch', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('sel-stale', fetcher, { staleTime: 0, default: 0 })
+    const tenfold = selector((q(1) as any).data, (d: number) => d * 10) as any
+
+    let dispose = tenfold.onChange(() => {})
+    tenfold.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+    expect(tenfold.get()).toBe(10)
+
+    dispose()
+    await sleep(20)
+    invalidate(q) // inactive: marks stale, no background fetch
+    await tick()
+    expect(calls.length).toBe(1)
+
+    const seen: number[] = []
+    dispose = tenfold.onChange(({ value }: { value: number }) => seen.push(value))
+    expect(tenfold.get()).toBe(10) // cached value served synchronously
+    await tick()
+    expect(calls.length).toBe(2) // re-activation revalidates
+    calls[1]!.resolve(2)
+    await tick()
+    expect(tenfold.get()).toBe(20)
+    expect(seen).toEqual([20])
+    dispose()
+  })
+
+  it('the entry evicts gcTime after the last selector observer leaves', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('sel-gc', fetcher, { staleTime: 60_000, gcTime: 30, default: 0 })
+    const handle = q(1)
+    const tenfold = selector((handle as any).data, (d: number) => d * 10) as any
+
+    let dispose = tenfold.onChange(() => {})
+    tenfold.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+    expect(tenfold.get()).toBe(10)
+    dispose()
+
+    await sleep(80) // > gcTime + async deactivation
+    expect(q(1)).not.toBe(handle) // evicted: a NEW handle
+
+    dispose = tenfold.onChange(() => {})
+    expect(tenfold.get()).toBe(0) // the old handle re-resolves to a virgin entry
+    await tick()
+    expect(calls.length).toBe(2) // refetches despite generous staleTime
+    dispose()
+  })
+
+  it('an errored entry retries when a selector re-activates it', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('sel-err', fetcher, { staleTime: 60_000, default: 0 })
+    const failed = selector((q(1) as any).error, (e: unknown) => e !== undefined) as any
+
+    let dispose = failed.onChange(() => {})
+    failed.get()
+    await tick()
+    calls[0]!.reject(new Error('boom'))
+    await tick()
+    expect(failed.get()).toBe(true)
+    dispose()
+    await sleep(20)
+
+    dispose = failed.onChange(() => {})
+    failed.get()
+    await tick()
+    expect(calls.length).toBe(2) // retry despite staleTime
+    calls[1]!.resolve(1)
+    await tick()
+    expect(failed.get()).toBe(false)
+    dispose()
+  })
+
+  it('through a selectorFamily entry: re-observing after eviction revalidates', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('fam-stale', fetcher, { staleTime: 0, default: 0 })
+    const tenfold = selectorFamily((k: number) => selector(q(k).data, (d: number) => d * 10), { graceMs: 10 })
+    const entry = tenfold(1)
+
+    let dispose = entry.onChange(() => {})
+    entry.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+    expect(entry.get()).toBe(10)
+
+    dispose()
+    await sleep(40) // > graceMs: the entry evicts and releases the query
+    invalidate(q) // inactive: marks stale, no background fetch
+    await tick()
+    expect(calls.length).toBe(1)
+
+    dispose = entry.onChange(() => {}) // a holder of the evicted node re-observes it
+    expect(entry.get()).toBe(10)
+    await tick()
+    expect(calls.length).toBe(2) // re-activation revalidates
+    calls[1]!.resolve(2)
+    await tick()
+    expect(entry.get()).toBe(20)
+    dispose()
+  })
+
+  it('through a selectorFamily entry: the query evicts gcTime after the entry is unobserved', async () => {
+    const { fetcher, calls } = controlledFetcher<number>()
+    const q = query('fam-gc', fetcher, { staleTime: 60_000, gcTime: 30, default: 0 })
+    const handle = q(1)
+    const tenfold = selectorFamily((k: number) => selector(q(k).data, (d: number) => d * 10), { graceMs: 10 })
+    const entry = tenfold(1)
+
+    const dispose = entry.onChange(() => {})
+    entry.get()
+    await tick()
+    calls[0]!.resolve(1)
+    await tick()
+    expect(entry.get()).toBe(10)
+    dispose()
+
+    await sleep(80) // > graceMs + gcTime + async deactivation
+    expect(q(1)).not.toBe(handle) // evicted: a NEW handle
   })
 })
 
@@ -408,39 +584,39 @@ describe('the keepPrevious recipe (temporal gating, no new API)', () => {
   it('holds the previous key\'s settled value while the next key is in flight', async () => {
     const { fetcher, calls } = controlledFetcher<string[]>()
     const books = query('kp-books', fetcher, { staleTime: 60_000, default: [] as string[] })
-    const key$ = observable('austen') as any
+    const key = observable('austen') as any
 
     // combine in space: the envelope IS the join — data + status, one node,
     // one sync selector for the current key (thunk form: dynamic keys)
-    const searchState$ = selector(() => (books(key$.get()) as any).get()) as any
+    const searchState = selector(() => (books(key.get()) as any).get()) as any
 
     // ...then gate in time (suppress unsettled frames → downstream holds last
     // settled). Gate on pending AND stale: `stale` is true synchronously from
     // construction, covering the microtask gap before `pending` flips.
-    const settled$ = streamSelector(
-      atomToStream<any>(searchState$).pipe(
+    const settled = streamSelector(
+      atomToStream<any>(searchState).pipe(
         filter(s => !s.pending && !s.stale),
         map(s => s.data as string[]),
       ),
       { default: [] as string[] },
     ) as any
 
-    const dispose = settled$.onChange(() => {})
-    settled$.get()
+    const dispose = settled.onChange(() => {})
+    settled.get()
     await tick()
     calls[0]!.resolve(['Emma'])
     await tick()
-    expect(settled$.get()).toEqual(['Emma'])
+    expect(settled.get()).toEqual(['Emma'])
 
-    key$.set('tolstoy') // switch keys: new fetch begins
+    key.set('tolstoy') // switch keys: new fetch begins
     await tick()
     expect(calls.length).toBe(2)
-    expect(searchState$.get().data).toEqual([]) // raw view: default while pending
-    expect(settled$.get()).toEqual(['Emma']) // gated view: previous list held
+    expect(searchState.get().data).toEqual([]) // raw view: default while pending
+    expect(settled.get()).toEqual(['Emma']) // gated view: previous list held
 
     calls[1]!.resolve(['War and Peace'])
     await tick()
-    expect(settled$.get()).toEqual(['War and Peace'])
+    expect(settled.get()).toEqual(['War and Peace'])
     dispose()
   })
 })
@@ -451,17 +627,17 @@ describe('query: handles are inert until observed', () => {
     const q = query('inert', fetcher, { staleTime: 60_000, default: [] as string[] })
 
     // the app pattern: static deps declared at module scope, long before render
-    const visible$ = selector((q('k') as any).data, (rows: string[]) => rows.length) as any
+    const visible = selector((q('k') as any).data, (rows: string[]) => rows.length) as any
     await sleep(20)
     expect(calls.length).toBe(0) // declaring a dep is NOT observing
 
-    const dispose = visible$.onChange(() => {})
-    visible$.get()
+    const dispose = visible.onChange(() => {})
+    visible.get()
     await tick()
     expect(calls.length).toBe(1) // observation propagates to the entry and fetches
     calls[0]!.resolve(['a', 'b'])
     await tick()
-    expect(visible$.get()).toBe(2)
+    expect(visible.get()).toBe(2)
     dispose()
   })
 
@@ -469,31 +645,31 @@ describe('query: handles are inert until observed', () => {
     const { fetcher, calls } = controlledFetcher<number>()
     const q = query('rebind', fetcher, { staleTime: 60_000, gcTime: 30, default: 0 })
 
-    const node$ = q('k') as any // captured once, like a module-level selector dep
-    let dispose = node$.onChange(() => {})
-    node$.get()
+    const node = q('k') as any // captured once, like a module-level selector dep
+    let dispose = node.onChange(() => {})
+    node.get()
     await tick()
     calls[0]!.resolve(1)
     await tick()
-    expect(node$.get().data).toBe(1)
+    expect(node.get().data).toBe(1)
     dispose()
 
     await sleep(80) // entry evicts; the handle survives
 
-    dispose = node$.onChange(() => {}) // old handle → fresh entry through the cache
-    expect(node$.get().data).toBe(0) // virgin again: cached value went with the entry
+    dispose = node.onChange(() => {}) // old handle → fresh entry through the cache
+    expect(node.get().data).toBe(0) // virgin again: cached value went with the entry
     await tick()
     expect(calls.length).toBe(2)
     calls[1]!.resolve(2)
     await tick()
-    expect(node$.get().data).toBe(2)
+    expect(node.get().data).toBe(2)
 
-    invalidate(node$) // the rebuilt entry is IN the cache — not a stranded orphan
+    invalidate(node) // the rebuilt entry is IN the cache — not a stranded orphan
     await tick()
     expect(calls.length).toBe(3)
     calls[2]!.resolve(3)
     await tick()
-    expect(node$.get().data).toBe(3)
+    expect(node.get().data).toBe(3)
     dispose()
   })
 
@@ -501,26 +677,26 @@ describe('query: handles are inert until observed', () => {
     const { fetcher, calls } = controlledFetcher<number>()
     const q = query('inv-evicted', fetcher, { staleTime: 60_000, gcTime: 30, default: 0 })
 
-    const node$ = q('k') as any
-    let dispose = node$.onChange(() => {})
-    node$.get()
+    const node = q('k') as any
+    let dispose = node.onChange(() => {})
+    node.get()
     await tick()
     calls[0]!.resolve(1)
     await tick()
     dispose()
     await sleep(80) // evicted
 
-    invalidate(node$) // no entry behind the handle: must not throw, must not fetch
+    invalidate(node) // no entry behind the handle: must not throw, must not fetch
     await sleep(20)
     expect(calls.length).toBe(1)
 
-    dispose = node$.onChange(() => {})
-    node$.get()
+    dispose = node.onChange(() => {})
+    node.get()
     await tick()
     expect(calls.length).toBe(2) // virgin entry revalidates on observation as always
     calls[1]!.resolve(2)
     await tick()
-    expect(node$.get().data).toBe(2)
+    expect(node.get().data).toBe(2)
     dispose()
   })
 
@@ -537,22 +713,22 @@ describe('resetQueries: the test-suite escape hatch', () => {
     const { fetcher, calls } = controlledFetcher<string>()
     const q = query('reset/all', fetcher, { default: 'none' })
 
-    let node$ = q('a') as any
-    let dispose = node$.onChange(() => {})
-    node$.get()
+    let node = q('a') as any
+    let dispose = node.onChange(() => {})
+    node.get()
     await tick()
     calls[0]!.resolve('landed')
     await tick()
-    expect(node$.get().data).toBe('landed')
+    expect(node.get().data).toBe('landed')
     dispose()
 
     resetQueries()
 
-    node$ = q('a') as any // fresh entry, not the old node
-    expect(node$.get().data).toBe('none') // virgin: default, not the old value
-    expect(node$.get().stale).toBe(true)
-    dispose = node$.onChange(() => {})
-    node$.get()
+    node = q('a') as any // fresh entry, not the old node
+    expect(node.get().data).toBe('none') // virgin: default, not the old value
+    expect(node.get().stale).toBe(true)
+    dispose = node.onChange(() => {})
+    node.get()
     await tick()
     expect(calls.length).toBe(2) // re-observation refetches
     dispose()
@@ -564,11 +740,11 @@ describe('resetQueries: the test-suite escape hatch', () => {
     const qa = query('reset/scoped-a', fa, { default: '', staleTime: 60_000 })
     const qb = query('reset/scoped-b', fb, { default: '', staleTime: 60_000 })
 
-    const a$ = qa('k') as any
-    const b$ = qb('k') as any
-    const da = a$.onChange(() => {})
-    const db = b$.onChange(() => {})
-    a$.get(); b$.get()
+    const a = qa('k') as any
+    const b = qb('k') as any
+    const da = a.onChange(() => {})
+    const db = b.onChange(() => {})
+    a.get(); b.get()
     await tick()
     ca[0]!.resolve('A'); cb[0]!.resolve('B')
     await tick()

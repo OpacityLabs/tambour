@@ -1,30 +1,30 @@
 import { useEffect, useState } from "react";
 import { eventToStream, statusOf } from "tambour";
-import { use$ } from "tambour/react";
+import { useValue } from "tambour/react";
 import {
   donate,
   refetchBooks,
-  searchState$,
-  searchUi$,
+  searchState,
+  searchUi,
   setQuery,
   setSortBy,
   toggleKeepPrevious,
-  visibleBooks$,
+  visibleBooks,
 } from "./state/books";
 import {
   addTodo,
   celebrate,
   clearCompleted,
   removeTodo,
-  stats$,
-  todos$,
+  stats,
+  todos,
   toggleTodo,
 } from "./state/todos";
 import { syncNow } from "./state/sync";
 
 function BooksPanelSearch() {
-  const query = use$(searchUi$.query);
-  const pending = use$(searchState$.pending);
+  const query = useValue(searchUi.query);
+  const pending = useValue(searchState.pending);
 
   return (
     <div className="row">
@@ -41,9 +41,9 @@ function BooksPanelSearch() {
 // Field-granular envelope subscriptions: this footer re-renders on status
 // changes but never for the (potentially large) data array itself.
 function SearchStatusLine() {
-  const pending = use$(searchState$.pending);
-  const fetchedAt = use$(searchState$.fetchedAt);
-  const stale = use$(searchState$.stale);
+  const pending = useValue(searchState.pending);
+  const fetchedAt = useValue(searchState.fetchedAt);
+  const stale = useValue(searchState.stale);
   return (
     <footer className="statusline">
       {pending
@@ -59,7 +59,7 @@ function SearchStatusLine() {
 // wiring. Donate, watch "donating… → donated ✓", then watch the shelf refetch
 // ITSELF: the mutation's settle invalidated the query; nobody called refetch.
 function DonateButton() {
-  const { pending, success } = use$(donate.status);
+  const { pending, success } = useValue(donate.status);
   return (
     <button onClick={() => donate()} disabled={pending}>
       {pending ? "donating…" : success ? "donated ✓ — again?" : "donate a book"}
@@ -68,9 +68,9 @@ function DonateButton() {
 }
 
 function BooksPanel() {
-  const keepPrevious = use$(searchUi$.keepPrevious);
-  const sortBy = use$(searchUi$.sortBy);
-  const books = use$(visibleBooks$);
+  const keepPrevious = useValue(searchUi.keepPrevious);
+  const sortBy = useValue(searchUi.sortBy);
+  const books = useValue(visibleBooks);
 
   return (
     <section className="panel">
@@ -127,9 +127,9 @@ function BooksPanel() {
 }
 
 function TodosPanel() {
-  const items = use$(todos$.items);
-  const { total, done } = use$(stats$);
-  const sync = use$(statusOf(syncNow));
+  const items = useValue(todos.items);
+  const { total, done } = useValue(stats);
+  const sync = useValue(statusOf(syncNow));
   const [draft, setDraft] = useState("");
 
   const submit = () => {

@@ -1,10 +1,10 @@
 import { batch, observable } from '@legendapp/state'
 import { Observable } from 'rxjs'
 import { currentOrigin, runWithOrigin } from './context'
-import { runEventError, runEventFire, runEventSettle } from './interceptors'
+import { runEventError, runEventFire, runEventSettle, type EventKind } from './interceptors'
 import type { ReadonlyNode } from './types'
 
-/** Observable in-flight status of a command event (see `statusOf`). */
+/** Observable in-flight status of a command event (its `.status` node). */
 export interface EventStatus {
   /** At least one invocation is currently running. */
   pending: boolean
@@ -65,6 +65,21 @@ export interface EventOptions {
 export const defaultRetryDelay = (failureCount: number): number =>
   Math.min(1000 * 2 ** (failureCount - 1), 30_000)
 
+/** Retry backoff sleep; a switch supersession wakes it immediately (timer
+ *  cleared) so the superseded run settles now, not when the delay elapses. */
+function backoff(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise(resolve => {
+    if (signal?.aborted) return resolve()
+    const done = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal?.addEventListener('abort', done)
+  })
+}
+
 /** Thrown when an attempt exceeds `timeout` ms. Retryable like any failure. */
 export class TimeoutError extends Error {
   constructor(eventName: string, ms: number) {
@@ -92,7 +107,12 @@ interface EventInternals {
   readonly name: string
 }
 
-export type CommandEvent<A extends unknown[], R> = ((...args: A) => Promise<R>) & EventInternals
+export type CommandEvent<A extends unknown[], R> = ((...args: A) => Promise<R>) &
+  EventInternals & {
+    /** The event's observable in-flight status node — read it like any node:
+     *  `useValue(save.status.pending)`, `selector(save.status, s => ...)`. */
+    readonly status: ReadonlyNode<EventStatus>
+  }
 export type StreamEvent<T> = ((payload: T) => void) & EventInternals
 
 function makeInternals<F extends (...args: never[]) => unknown>(fn: F, name: string): F & EventInternals {
@@ -105,8 +125,8 @@ function makeInternals<F extends (...args: never[]) => unknown>(fn: F, name: str
   return fn as F & EventInternals
 }
 
-function notify(ev: EventInternals, args: unknown[]): void {
-  runEventFire(ev[EVENT_NAME], args)
+function notify(ev: EventInternals, args: unknown[], kind: EventKind): void {
+  runEventFire(ev[EVENT_NAME], args, kind)
   const payload = args.length <= 1 ? args[0] : args
   for (const l of ev[LISTENERS]) l(payload)
 }
@@ -147,25 +167,26 @@ export function event(
   let inFlight: Promise<unknown> | null = null           // exhaust
   let controller: AbortController | null = null          // switch
 
-  const status$ = observable<EventStatus>({
+  const status = observable<EventStatus>({
     pending: false, inFlight: 0, error: undefined, success: false,
   })
 
-  const settle = (superseded: boolean, error?: unknown): void => {
+  const settle = (superseded: boolean, rejected: boolean, error?: unknown): void => {
     batch(() => {
-      const n = Math.max(0, status$.inFlight.peek() - 1)
+      const n = Math.max(0, status.inFlight.peek() - 1)
       // a supersession is not an outcome — only the surviving run may write
-      // error/success, even if the superseded handler ran to completion
-      if (superseded) status$.assign({ pending: n > 0, inFlight: n })
-      else if (error !== undefined) status$.assign({ pending: n > 0, inFlight: n, error, success: false })
-      else status$.assign({ pending: n > 0, inFlight: n, success: true })
+      // error/success, even if the superseded handler ran to completion.
+      // `rejected` is explicit: a rejection with `undefined` is still a failure
+      if (superseded) status.assign({ pending: n > 0, inFlight: n })
+      else if (rejected) status.assign({ pending: n > 0, inFlight: n, error, success: false })
+      else status.assign({ pending: n > 0, inFlight: n, success: true })
     })
   }
 
   const fire = (...args: unknown[]): Promise<unknown> => {
     if (concurrency === 'exhaust' && inFlight) return inFlight // coalesced: status untouched
 
-    notify(ev, args)
+    notify(ev, args, 'event')
 
     let handlerArgs = args
     if (concurrency === 'switch') {
@@ -176,8 +197,8 @@ export function event(
     const myController = controller
 
     batch(() => {
-      status$.assign({
-        pending: true, inFlight: status$.inFlight.peek() + 1, error: undefined, success: false,
+      status.assign({
+        pending: true, inFlight: status.inFlight.peek() + 1, error: undefined, success: false,
       })
     })
 
@@ -196,7 +217,17 @@ export function event(
       })
     }
 
-    const promise = (async () => {
+    // deferred run promise: under exhaust it must be `inFlight` BEFORE the
+    // handler's sync prefix runs, so a re-entrant fire coalesces onto it
+    let resolveRun!: (value: unknown) => void
+    let rejectRun!: (error: unknown) => void
+    const promise = new Promise<unknown>((resolve, reject) => {
+      resolveRun = resolve
+      rejectRun = reject
+    })
+    if (concurrency === 'exhaust') inFlight = promise
+
+    ;(async () => {
       // async wrapper: a synchronously-throwing handler still rejects (never
       // throws). Retries live INSIDE this one logical run — pending spans
       // attempts; only the final outcome settles into error/success.
@@ -209,16 +240,19 @@ export function event(
           failureCount += 1
           if (!shouldRetry(failureCount, error)) throw error
           const delay = delayFor(failureCount, error)
-          if (delay > 0) await new Promise(r => setTimeout(r, delay))
+          if (delay > 0) await backoff(delay, myController?.signal)
           if (myController?.signal.aborted) throw error // superseded during backoff
         }
       }
-    })()
+    })().then(resolveRun, rejectRun)
 
     const fireOnSettle = (superseded: boolean, error?: unknown): void => {
       if (!onSettle) return
       try {
-        onSettle(superseded, error, args)
+        // origin context so anything the settle hook triggers synchronously
+        // (a mutation's invalidations, and their timeline entries) is
+        // attributed to this event
+        runWithOrigin(name, () => onSettle(superseded, error, args))
       } catch (hookError) {
         runEventError(name, hookError, args) // e.g. a bad invalidation target
       }
@@ -227,34 +261,37 @@ export function event(
     promise.then(
       () => {
         const superseded = myController?.signal.aborted ?? false
-        settle(superseded)
+        settle(superseded, false)
         fireOnSettle(superseded)
-        runEventSettle(name, undefined, args, superseded)
+        runEventSettle(name, undefined, args, superseded, false)
       },
       error => {
         const superseded = myController?.signal.aborted ?? false
-        settle(superseded, error)
+        settle(superseded, true, error)
         fireOnSettle(superseded, error)
-        runEventSettle(name, error, args, superseded)
+        runEventSettle(name, error, args, superseded, true)
       },
     )
 
     if (concurrency === 'exhaust') {
-      inFlight = promise
       promise.finally(() => { inFlight = null }).catch(() => {})
     }
 
     // route errors to interceptors even if nobody awaits; the extra .catch
     // marks the rejection handled so unawaited fires don't crash the process,
-    // while awaiting callers still see the rejection on the returned promise
-    promise.catch(error => runEventError(name, error, args)).catch(() => {})
+    // while awaiting callers still see the rejection on the returned promise.
+    // A switch-superseded rejection is not a failure — interceptors skip it.
+    promise
+      .catch(error => { if (!myController?.signal.aborted) runEventError(name, error, args) })
+      .catch(() => {})
 
     return promise
   }
 
   const ev = makeInternals(fire, name)
-  EVENT_STATUS.set(ev, status$)
-  return ev
+  EVENT_STATUS.set(ev, status)
+  Object.defineProperty(ev, 'status', { value: status })
+  return ev as CommandEvent<any[], any>
 }
 
 /**
@@ -263,7 +300,7 @@ export function event(
  */
 export function streamEvent<T = void>(name: string): StreamEvent<T> {
   const fire = (payload: T): void => {
-    notify(ev, [payload])
+    notify(ev, [payload], 'stream')
   }
   const ev = makeInternals(fire, name)
   return ev as StreamEvent<T>

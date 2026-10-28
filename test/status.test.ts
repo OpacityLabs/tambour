@@ -12,26 +12,44 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+describe('event .status property', () => {
+  it('every command event carries its status node; statusOf returns the same node', () => {
+    const save = event('t/statusProp', async () => 'ok')
+    expect(save.status).toBe(statusOf(save))
+    expect(save.status.get()).toEqual({ pending: false, inFlight: 0, error: undefined, success: false })
+  })
+
+  it('tracks a run through the property', async () => {
+    const gate = deferred<string>()
+    const save = event('t/statusPropRun', () => gate.promise)
+    const p = save()
+    expect(save.status.get().pending).toBe(true)
+    gate.resolve('done')
+    await p
+    expect(save.status.get()).toEqual({ pending: false, inFlight: 0, error: undefined, success: true })
+  })
+})
+
 describe('statusOf(event)', () => {
   it('tracks pending across an invocation, and exhaust-coalesced re-fires stay truthful', async () => {
     const gate = deferred<string>()
     const sync = event('t/sync', () => gate.promise, { concurrency: 'exhaust' })
 
-    const status$ = statusOf(sync)
-    expect(status$.get()).toEqual({ pending: false, inFlight: 0, error: undefined, success: false })
+    const status = statusOf(sync)
+    expect(status.get()).toEqual({ pending: false, inFlight: 0, error: undefined, success: false })
 
     const p1 = sync()
-    expect(status$.get().pending).toBe(true)
-    expect(status$.get().inFlight).toBe(1)
+    expect(status.get().pending).toBe(true)
+    expect(status.get().inFlight).toBe(1)
 
     const p2 = sync() // coalesced: same promise, no second in-flight
     expect(p2).toBe(p1)
-    expect(status$.get().inFlight).toBe(1)
+    expect(status.get().inFlight).toBe(1)
 
     gate.resolve('ok')
     await p1
     await sleep(1)
-    expect(status$.get()).toEqual({ pending: false, inFlight: 0, error: undefined, success: true })
+    expect(status.get()).toEqual({ pending: false, inFlight: 0, error: undefined, success: true })
   })
 
   it('records rejections, clears the error on the next fire', async () => {

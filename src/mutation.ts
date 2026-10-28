@@ -1,13 +1,5 @@
-import {
-  event,
-  eventStatus,
-  kOnSettle,
-  type CommandEvent,
-  type EventOptions,
-  type EventStatus,
-} from './events'
+import { event, kOnSettle, type CommandEvent, type EventOptions } from './events'
 import { invalidate } from './query'
-import type { ReadonlyNode } from './types'
 
 export interface MutationOptions<A extends unknown[] = unknown[]> extends EventOptions {
   /**
@@ -33,24 +25,21 @@ export interface MutationOptions<A extends unknown[] = unknown[]> extends EventO
   invalidates?: object[] | ((args: A) => object[])
 }
 
-/** A command event that carries its status node with it. */
-export type Mutation<A extends unknown[], R> = CommandEvent<A, R> & {
-  /** The same node `statusOf(mutation)` returns: { pending, inFlight, error, success }. */
-  readonly status: ReadonlyNode<EventStatus>
-}
+/** A command event whose settle can invalidate queries. The `.status` node
+ *  comes from CommandEvent — every event carries one. */
+export type Mutation<A extends unknown[], R> = CommandEvent<A, R>
 
 /**
  * EXPERIMENTAL — a server write with the batteries attached: an `event`
- * (identical semantics, timeline entry, concurrency, statusOf, eventToStream)
- * whose status node rides on the function and whose settle can invalidate
- * queries declaratively.
+ * (identical semantics, timeline entry, concurrency, `.status`, eventToStream)
+ * whose settle can invalidate queries declaratively.
  *
  *   export const donate = mutation('library/donate', b => api.donate(b), {
  *     invalidates: [libraryBooks],       // settle → stale → active keys refetch
  *     concurrency: 'exhaust',            // submit-style: mash-safe
  *   })
  *
- *   const { pending, success, error } = use$(donate.status)
+ *   const { pending, success, error } = useValue(donate.status)
  *   await donate(book)
  *
  * Deliberately NOT here: optimistic updates (straight-line code in the
@@ -90,6 +79,5 @@ export function mutation(
         }
       : undefined,
   } as EventOptions)
-  Object.defineProperty(ev, 'status', { value: eventStatus(ev) })
   return ev as unknown as Mutation<any[], any>
 }

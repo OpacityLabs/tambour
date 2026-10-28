@@ -29,7 +29,7 @@ export function streamSelector<T>(
   source: RxObservable<T>,
   opts?: StreamSelectorOptions<T>,
 ): ReadonlyNode<T | undefined> {
-  const node$ = observable<T | undefined>(
+  const node = observable<T | undefined>(
     synced({
       initial: opts?.default,
       subscribe: ({ update }) => {
@@ -45,5 +45,5 @@ export function streamSelector<T>(
       },
     }) as any,
   )
-  return node$ as unknown as ReadonlyNode<T | undefined>
+  return node as unknown as ReadonlyNode<T | undefined>
 }
